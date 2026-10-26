@@ -105,3 +105,13 @@ Plan complete. 104 tests pass; 5/5 agy jobs done and audited; 1.72 weekly / 6.05
 points spent; floor never reached. `integration/prototype` is the merge candidate;
 `main` is untouched. Only `NEEDS_HUMAN.md` items remain (phone test, accounts/system
 changes, build-vs-buy decision, merge to main).
+
+## D15 — Relay micro run: chunking and merge protocol (23:40 IST)
+Micromanagement comparison run on `integration/relay-micro`. Chunks M1–M4 are in
+`PLAN.md`; each is one agy job with `verify="python3 -m pytest -q"`, `max_minutes=30`,
+no `model`, and an explicit "do NOT modify tests/acceptance/" rule. M1 combines
+`relay_server.py` and `relay_transport.py` because the acceptance module imports both
+at import time: any single-module job would fail the mandated full-suite verify for
+reasons unrelated to its own quality. Every job is reviewed, merged only into
+`integration/relay-micro`, tested, then cleaned up. `f003260` is the acceptance-test
+baseline. No other relay implementation is consulted (contract-only run).
