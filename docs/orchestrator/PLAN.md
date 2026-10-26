@@ -147,3 +147,20 @@ Separate run on branch `integration/relay`, branched from `integration/prototype
   4. on failure: at most one short fix job if quota allows, otherwise I fix it and
      log the handover in `DECISIONS.md`;
   5. mine: `REPORT.md`/`DECISIONS.md`, `agy_cleanup` (never `force=true`).
+
+## Relay run — final status (22:50 IST) — COMPLETE
+
+- [x] branch `integration/relay` from `f9e760f`; base sha recorded above
+- [x] acceptance tests + relay contract committed first (`f003260`, 13 tests)
+- [x] agy job 1 `cecc329b` (build) — `needs_review` for a 76-char redundant COMMIT_MSG
+      subject; code complete, reviewed by me, merged (`8a10748`), gate run by me
+- [x] gate found one deadlock (`connect()` on auth/down-server failure); job 2
+      `c6e7dc8e` (the single allowed fix) fixed it, `done`, verify+audit passed,
+      merged (`ad163c1`)
+- [x] gate re-run: acceptance 13 passed, full suite 130 passed, second full run
+      130 passed. Both job branches cleaned up without `force`.
+- [x] docs updated (`REPORT.md` rewritten for this run, `DECISIONS.md` D15–D19)
+- Remaining: human-only items H10 (merge to main) and H11 (TLS/deployment hardening).
+
+Final HEAD: `ad163c1` on `integration/relay`. `main` / `integration/prototype`
+untouched. Quota: 22.12% weekly / 91.12% 5h remaining.

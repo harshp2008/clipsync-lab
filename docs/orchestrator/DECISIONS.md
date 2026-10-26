@@ -105,3 +105,44 @@ Plan complete. 104 tests pass; 5/5 agy jobs done and audited; 1.72 weekly / 6.05
 points spent; floor never reached. `integration/prototype` is the merge candidate;
 `main` is untouched. Only `NEEDS_HUMAN.md` items remain (phone test, accounts/system
 changes, build-vs-buy decision, merge to main).
+
+## D15 — Relay contract fixed before the build job (22:22 IST)
+`docs/design/interfaces.md` gained the additive relay section: sync `RelayServer`
+(`start`/`stop`, background asyncio loop, `host` must be exactly `127.0.0.1`, token in
+the `Authorization: Bearer` handshake header, HTTP 403 rejection, fan-out only to other
+clients, oversize -> close 1009) and sync `RelayTransport` (same `Transport` methods,
+auto-reconnect, client-side size check, `recv` non-blocking). Token in a header (not
+the URL) so it cannot leak via URL logging. Frame limit is
+`4 * ((MAX_IMAGE_BYTES + 2) // 3) + 8192` — base64 expansion of the largest legal image
+payload plus JSON slack — because `MAX_IMAGE_BYTES` alone would reject a legal encoded
+image. Adding this before writing the tests is what let the acceptance tests be
+implementation-agnostic. Job: none yet.
+
+## D16 — Job 1 accepted from `needs_review` after full review (22:38 IST)
+`cecc329b` ended in `needs_review` with `invalid_commit_message`: its final,
+redundant `COMMIT_MSG` had a 76-char subject (wrapper limit 72). The worktree was
+clean and the three real commits complete; the wrapper therefore skipped verify and
+audit. I did **not** resume (a resume would re-run a finished job for a bookkeeping
+message) and did not edit the worktree by hand. I read the whole diff, checked that
+`tests/acceptance/` was untouched, merged the branch into `integration/relay`, and ran
+every test myself. Assignment reasoning: the code was finished; only the gate mattered.
+
+## D17 — One fix job for the connect deadlock, not a hand-fix (22:40 IST)
+The gate found `test_wrong_token_is_rejected` hanging: `RelayTransport.connect()` called
+`self.close()` while holding the non-reentrant `threading.Lock` `_lifecycle_lock`.
+Quota was 22.28% weekly (above the 22% floor), so the run's rule "at most one fix job"
+was used instead of fixing it myself. Short prompt named both hanging tests and the
+root cause. Job `c6e7dc8e`: `done`, one-line `Lock` -> `RLock` change plus a regression
+test, verify `130 passed`, audit passed. This was job 2 of the 2-job cap.
+
+## D18 — Real WebSockets, no stdlib fallback (22:21 IST)
+`python3 -c "import websockets"` succeeded (10.4), so the relay uses the library and
+no NEEDS_HUMAN swap item was created. The `api` is still the same byte-pipe interface,
+so a future `wss://` production deployment does not change `RelayTransport`.
+
+## D19 — Final state (22:50 IST)
+Gate passed on my own runs: 13/13 acceptance, 130/130 full suite, twice.
+`integration/relay` HEAD `ad163c1`; job branches merged with `--no-ff` and cleaned up
+(`force` never used). Quota 22.69% -> 22.12% weekly (0.58 spent) and 93.14% -> 91.12%
+5h (2.02 spent). No production code written by me. Remaining work is human-only:
+merge to `main`, TLS/deployment hardening (see NEEDS_HUMAN H10–H11).

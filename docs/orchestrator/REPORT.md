@@ -1,212 +1,178 @@
-# Report — clipsync-lab coordinated run
+# Report — clipsync relay run (network transport)
 
-Run window: **2026-10-26 20:31 → 21:20 IST** (deadline 02:30; finished early).
-Repo: `/home/harsh/Documents/GITHUB PROJECTS/clipsync-lab`. `main` untouched.
-Result: research + laptop-side prototype + tests + orchestrator docs, all on
-`integration/*` branches.
+Run: **2026-10-26 22:20 → 22:50 IST** (deadline 02:30, finished early).
+Repo: `/home/harsh/Documents/GITHUB PROJECTS/clipsync-lab`.
+Branch: **`integration/relay`** (branched from `integration/prototype`). `main` and
+`integration/prototype` are untouched. This report supersedes the prototype report
+from the earlier run, which remains readable via
+`git show f9e760f:docs/orchestrator/REPORT.md`.
 
-## 1. Deliverables
+## 1. Result
 
-| Deliverable | Where | State |
+The relay feature is implemented, reviewed and merged. Acceptance tests written
+before the implementation job all pass, as does the full suite:
+
+| Run | Command | Result |
 |---|---|---|
-| Research synthesis (why it breaks, 11 options, comparison, recommendation, privacy) | `docs/research/clipboard-sync.md` | complete |
-| Raw agy option survey (provenance + reviewer corrections banner) | `docs/research/agy-options-landscape.md` | kept as draft |
-| Frozen module contracts | `docs/design/interfaces.md` | complete |
-| Prototype (protocol, clipboard, transport, crypto, engine) | `clipsync/` | implemented |
-| Tests (protocol, clipboard, crypto, transport, engine) | `tests/` | **104 passed** |
-| Android guide, three paths | `docs/android-side.md` | complete, **UNTESTED** |
-| Orchestrator docs | `docs/orchestrator/{PLAN,DECISIONS,NEEDS_HUMAN,REPORT}.md` | complete |
-| Project overview / run instructions | `README.md` | complete |
+| Acceptance only | `python3 -m pytest -q tests/acceptance` | **13 passed** (2.53 s) |
+| Full suite | `python3 -m pytest -q` | **130 passed** (2.93 s) |
+| Full suite, repeat (flake check) | `python3 -m pytest -q` | **130 passed** (2.96 s) |
 
-## 2. Assignment table (final owner)
+`websockets` 10.4 was already installed, so the relay uses real WebSockets; the
+stdlib-stream fallback and its NEEDS_HUMAN swap item were **not** needed.
 
-| Chunk | Final owner | Why | Outcome |
-|---|---|---|---|
-| R0 Probe: Android background clipboard + agy research ability | **agy** | Cheapest read-only job; priced the rest | done, 0.27 pts |
-| R1 Android restrictions by version | **agy draft + me** | Self-contained research, but claims needed audit | probe draft corrected in synthesis |
-| R2 GNOME Wayland access + image MIME/size limits | **me** | Needs judgement; small; feeds the design | written + verified |
-| R3 Options landscape (10 families) | **agy** | Source-heavy breadth, self-contained | done, 0.33 pts; 5 claims corrected |
-| R4 Comparison table + recommendation + privacy | **me** | Cross-cutting synthesis; must match prototype | written |
-| P1 Interfaces / message format design | **me** | Contract that makes separately-owned modules fit | frozen before code jobs |
-| P2 `protocol.py` + unit tests | **agy** | Best-specified chunk (exact hash/wire rules + tests) | accepted unchanged, 24 tests |
-| P3 `clipboard.py` (fake + unexecuted Wayland) | **me** | Safety-critical: must never touch the real clipboard | 14 tests |
-| P4 `transport.py` + tests | **agy** | Self-contained byte-pipe semantics | accepted unchanged, 32 tests |
-| P5 `engine.py` (loop/dedup/ordering/reconnect) | **me** | Most subtle logic in the project | 18 tests |
-| P6 `crypto.py` optional E2E | **me** | Security-sensitive and short | 8 tests |
-| P7 Integration/E2E tests | **me** | Cross-cutting; module tests travelled with P2/P4 | included |
-| P8 Android-side guide | **agy + my fixes** | Self-contained docs | 2 invented facts fixed |
-| P9 Report, merges, final verification | **me** | Requires the whole conversation | this file |
+## 2. Base and branch topology
 
-Every owner change is also in `DECISIONS.md` with a one-line reasoning (D7–D12).
+- **Recorded base sha: `f9e760fcae13899b735c34c1ebbbda38897fb0cc`** (`f9e760f`,
+  `integration/prototype` HEAD at branch time). Recorded in `PLAN.md`.
+- `f003260` — my spec-first acceptance tests + relay contract + plan.
+- Job 1 base `f003260` → merged as `8a10748` (3 job commits).
+- Job 2 base `8a10748` → merged as `ad163c1` (1 job commit).
+- `integration/relay` HEAD = `ad163c1`; all agy job branches were merged with
+  `--no-ff` and then deleted after `agy_cleanup` (no `force=true`).
 
-## 3. agy jobs
+## 3. Acceptance tests (written by me, before implementation)
 
-All jobs used `max_minutes=30`, no `model` parameter, one at a time, `agy_usage` checked
-immediately before each start, every diff reviewed with `agy_review` and read, and
-every branch merged only into an `integration/*` branch then cleaned with
-`force` left at false.
+`tests/acceptance/test_relay_acceptance.py` — black-box, public API only, loopback
+and ephemeral ports only, no real clipboard:
+
+1. `test_relay_transport_satisfies_transport_protocol` — `isinstance(…, Transport)`,
+   no I/O in the constructor.
+2. `test_server_binds_loopback_only` — `127.0.0.1` only; `0.0.0.0`/`::`/`localhost`/
+   hostnames rejected; empty token rejected; `running`/`port` lifecycle.
+3. `test_two_clients_exchange_text_and_image` — real `ClipMessage` frames with a
+   text payload and an 8 KiB+ PNG payload, both directions, bytes intact.
+4. `test_message_fans_out_to_every_other_client` — 3 clients; both non-senders get it.
+5. `test_sender_never_receives_its_own_message`.
+6. `test_per_sender_message_ordering` — 25 frames arrive in exact order.
+7. `test_opaque_non_json_frames_round_trip` — arbitrary binary incl. NUL/CRLF/JSON-ish.
+8. `test_wrong_token_is_rejected` — `connect()` raises `TransportError`, peer unaffected.
+9. `test_missing_token_is_rejected` — raw client without the auth header is refused.
+10. `test_oversize_frame_is_rejected_by_the_server` — server closes offender (1009),
+    bystander receives nothing and stays connected.
+11. `test_oversize_frame_is_rejected_by_the_client` — client `send` raises, nothing sent.
+12. `test_client_reconnects_after_server_restart` — server stops and rebinds the same
+    port; both clients reconnect and delivery resumes.
+13. `test_encrypted_payloads_pass_through_untouched` — Fernet ciphertext is byte-equal
+    on the far side and decodes; the relay is constructed with no key.
+
+The contract those tests pin is in `docs/design/interfaces.md` §
+"relay_server.py / relay_transport.py" (additive).
+
+## 4. agy jobs
+
+Quota was checked with `agy_usage` immediately before each start. No `model`
+parameter, `force` never passed to cleanup.
 
 | # | Job id | Title | State | Wall | Commits | Verify | Audit | Weekly cost | 5h cost |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | `ed2ece76-537d-4c03-82dd-cc2895eeb29f` | Probe: Android clipboard background limits | done | 6.9 min | 1 | pass | pass | 0.27 | 0.94 |
-| 2 | `3f818eca-765c-4952-b751-08db9cf32c0d` | Research: 10-family options landscape | done | 9.3 min | 1 | pass | pass | 0.33 | 1.17 |
-| 3 | `1929b570-1807-4966-b23d-8f92d1c9e2fe` | Implement `protocol.py` + tests | done | 8.6 min | 2 | pass | pass | 0.49 | 1.73 |
-| 4 | `d0121297-e7d5-4d79-845a-e81d173573a9` | Implement `transport.py` + tests | done | 8.1 min | 2 | pass | pass | 0.38 | 1.33 |
-| 5 | `3bf97154-f6f8-42bf-a97e-4d734a6676fa` | Android-side setup guide | done | 6.1 min | 1 | pass | pass | 0.25 | 0.88 |
-| | | **Total** | **5/7 jobs** | **~39 min** | **7** | **all pass** | **all pass** | **1.72** | **6.05** |
+| 1 | `cecc329b-972b-4b5e-b318-44b444c00927` | Implement relay server + transport | **needs_review** (wrapper: `invalid_commit_message`) | 8.1 min | 3 | **did not run** | not run | 0.41 | 1.45 |
+| 2 | `c6e7dc8e-918f-4c53-83b2-ffb734faf486` | Fix `RelayTransport.connect()` deadlock | **done** | 3.1 min | 1 | **pass** (`130 passed`) | **pass** | 0.16 | 0.57 |
+| | | **Total** | | **~11 min** | **4** | | | **0.57** | **2.02** |
 
-One benign warning: job 3 reported `plan_incomplete` while its own plan was 6/6 done
-and the wrapper's verify ran green. No action needed.
-No job hit `quota_exhausted`, `needs_decision`, `auth_required`, `failed`, a security
-audit finding, or a permission denial.
+Job 1 stopped in `needs_review` because its *last, redundant* `COMMIT_MSG` had a
+76-char subject (wrapper limit is 72). The worktree was clean, the three real commits
+were already made, and the code was complete; the wrapper therefore never ran verify
+or the audit. I treated the branch as unreviewed code, read the whole diff, merged it,
+and ran the gate myself. Job 2 (the one allowed fix job) fixed the bug the gate found
+and passed verify + audit normally.
 
-## 4. Quota, the floor, and fallback
+## 5. Did agy touch `tests/acceptance/`? No.
 
-- Start: **24.42% weekly / 99.19% 5h** remaining. Coherent end: **22.69% / 93.14%**.
-- Measured spend: **1.73 weekly points, 6.05 five-hour points** across five jobs.
-- The brief's floor (**20% weekly / 15% 5h**) was **never reached**, so there was no
-  forced takeover after the floor, no `quota_exhausted` state, and no need to swap
-  remaining chunks off agy. Had it been reached, the remaining chunks (android doc,
-  report, and any code review) were already marked mine in `PLAN.md`; only job 5 would
-  have moved.
-- Fallback *was* exercised in a smaller way: R1 was downgraded from a second research
-  job to "probe draft + my verification" after the probe showed agy's research was
-  cheap but over-confident. That saved a job and is recorded in D8.
-- There is budget for ~2 more jobs if a follow-up session wants them (7-job cap, ~2.7
-  weekly points above the floor), but the plan is done and more agy work would add no
-  deliverable.
+- `git diff f003260..job1 -- tests/acceptance` → **empty**.
+- `git diff 8a10748..job2 -- tests/acceptance` → **empty**.
+- `git log f003260..job1 -- tests/acceptance` → empty; same for job 2.
+- `git log f9e760f..HEAD -- tests/acceptance` → only `f003260`, my own test commit.
+- `git diff f9e760f..HEAD --stat -- tests/acceptance` → only additions from
+  `f003260`; no job commit touched the file.
 
-## 5. How well the delegation worked
+Nothing needed restoring.
 
-**What agy did well**
+## 6. Gate results (commands actually run)
 
-- The probe answered the two questions it was built for: `search_web` works, a job
-  costs ~0.3 weekly points and ~7–9 minutes, and its worktree/verify/audit plumbing is
-  reliable.
-- **Protocol** and **transport** were specified tightly enough that both were accepted
-  with **zero code changes**: exact hash formula, strict `from_wire` validation,
-  base64/strict JSON, file offsets, partial trailing lines, path-safe ids, fsync.
-  Their 56 tests were green on the first wrapper run, and my 18 engine tests passed
-  against them unchanged.
-- The Android guide had the right structure (three paths, banners, placeholders,
-  troubleshooting, privacy, "what is still missing") and kept every secret as a
-  placeholder.
+1. Diff check on the acceptance tests (above) — clean.
+2. `agy_review` for both jobs; read every changed line. Only the four allowed files
+   in job 1; only `relay_transport.py` + its unit test in job 2. No fatal audits, no
+   denials.
+3. Merged job 1:
+   `git merge --no-ff agy/implement-network-relay-server-transport-bdba1b23`
+   → `8a10748`.
+4. Ran the tests myself: `timeout 240 python3 -m pytest -q tests/acceptance` →
+   **7 passed, then hang** in `test_wrong_token_is_rejected`.
+5. Root-caused the hang myself: `RelayTransport.connect()` called `self.close()`
+   while already holding the non-reentrant `threading.Lock` `_lifecycle_lock`; any
+   initial connect failure (wrong token / server down) self-deadlocked instead of
+   raising `TransportError`. Its own
+   `tests/test_relay_transport.py::test_relay_transport_connect_failure_to_down_server`
+   hung for the same reason. Every other acceptance test passed individually.
+6. One fix job with the failing test names and the diagnosis → `done`, verify
+   `130 passed`, audit `passed`. Re-ran the diff check, reviewed the one-line RLock
+   change + regression test, merged it (`ad163c1`).
+7. Re-ran the gate myself: **13/13 acceptance**, **130/130 full suite**, twice.
 
-**What agy did badly**
+## 7. What I did myself (and why)
 
-- **Research over-confidence.** It marked claims VERIFIED against pages that do not say
-  them: Android 10 background *writes*, "Android 14/15/16 continuity", ntfy
-  password-based AES-GCM E2E, and GSConnect "Mutter D-Bus" internals. It also got the
-  KDE Connect port range wrong ("port 1716" vs the documented 1714–1764).
-- **Invented operational facts in the Android guide**: a `CC_ADMIN_PASSWORD` Docker
-  env var that does not exist in the ClipCascade README, and the package id
-  `com.sathvikrao.clipcascade` instead of `com.clipcascade` in the ADB commands.
-- Its own reports repeated the same over-claims, so the reports were not a reliable
-  signal — `agy_review` + reading the diff were.
+- Wrote the relay contract addition and all 13 acceptance tests, and committed them
+  before any implementation job existed (the spec-first part of the run).
+- Made the merge/gate decisions; ran every test that decided acceptance.
+- Diagnosed the deadlock from the diff + hang (no polling); handed the exact failing
+  tests and root cause to the single allowed fix job rather than editing code myself,
+  because quota was above the floor (22.28% weekly at that point).
+- **No production code was written by me in this run.** I fixed no code by hand; the
+  only edits outside the job branches are docs/orchestrator + the acceptance tests
+  (both mine by design).
+- Recorded the job-1 `needs_review` cause here and in `DECISIONS.md` (D16).
 
-**What I had to fix**
+## 8. Quota
 
-- Added a reviewer-corrections banner to the raw options doc instead of rewriting it
-  silently, then re-verified ClipCascade and SyncClipboard from their READMEs and wrote
-  the comparison/recommendation myself.
-- Corrected the KDE Connect facts from its UserBase page (text-only, manual
-  "Send clipboard" on Android 10+, QS tile on 14+, READ_LOGS/Magisk workaround).
-- Fixed the two invented Android-guide facts and marked the GSConnect Wayland claim
-  `[ASSUMED]`.
-- Reviewed every diff before merge; no agy code was merged unreviewed.
+- Start: **22.69% weekly / 93.14% 5h** remaining.
+- End: **22.12% weekly / 91.12% 5h**.
+- Measured spend: **0.58 weekly / 2.02 five-hour points** (2 jobs).
+- The run's floor (**22% weekly / 15% 5h**) was respected: checked before both starts
+  (22.69% and 22.28%), never below 22%. Weekly ended 0.12 points above the floor, so
+  no further job should be started this week without the human's say-so. Max 2 jobs
+  for this run was reached exactly; no job was wasted.
 
-**Takeaway:** agy is excellent at bounded implementation against a frozen contract and
-acceptable at breadth research as a first draft; it is not trustworthy as an
-authority. The design-first approach (interfaces frozen before any code job) is what
-made the code hand-offs clean.
+## 9. Files
 
-## 6. Verification
+Added: `clipsync/relay_server.py` (216 lines), `clipsync/relay_transport.py`
+(331 lines after the fix), `tests/test_relay_server.py`, `tests/test_relay_transport.py`,
+`tests/acceptance/test_relay_acceptance.py`.
+Changed (mine): `docs/design/interfaces.md`, `docs/orchestrator/{PLAN,DECISIONS,
+NEEDS_HUMAN,REPORT}.md`.
+No existing module, test, `pyproject.toml`, `main` or `integration/prototype` was
+modified.
 
-- Final suite: `python3 -m pytest -q` → **104 passed**.
-- Per-job verify commands all passed (`tests/test_protocol.py` 24,
-  `tests/test_transport.py` 32, research/doc gates 3).
-- All five audits passed; no denied commands/tools, no modified host paths.
-- Tests never read/write the real clipboard: `WlClipboardBackend` is driven only by a
-  canned `CommandRunner`; the engine uses `FakeClipboard` + `InMemoryTransport`.
-- No network calls besides research fetches; no packages installed; no services,
-  ports, settings, cron/systemd, accounts, keys, or cloud projects created.
-- `main` still at the initial commit; no `.agy/` files are tracked; agy worktrees and
-  job branches were removed via `agy_cleanup`.
+## 10. Risks / limitations (documented, not hidden)
 
-## 7. Untested / not done
+1. **No TLS**: `ws://` on loopback only. Remote use needs a `wss://` endpoint and a
+   reverse proxy/TLS; the token is a single shared secret, not per-device auth.
+2. No persistence or offline queue: frames sent while disconnected raise
+   `TransportError` (the engine's outbox is what retries them).
+3. The relay is a dumb fan-out server: no rooms, no ACKs, no replay protection.
+4. `websockets` emits a DeprecationWarning ("declare process_request as a coroutine")
+   on 10.4; compatibility with future majors is not tested.
+5. No Android/phone client exists yet (unchanged from the prototype run).
+6. Reconnect assumes the same URL; DNS/Tailscale address changes are out of scope.
 
-- **All phone steps** in `docs/android-side.md` (Paths A, B and C) — no device in this
-  run.
-- `WlClipboardBackend.read()/write()` were **not executed**; only its command builders
-  and MIME choice are tested. GNOME's focus behaviour was not measured on the machine.
-- The **WebSocket transport adapter** and the **Android client** for Path A are design
-  only; `docs/android-side.md` says so explicitly.
-- Background `setPrimaryClip` on stock Android 15/16 and OEM battery behaviour are
-  **ASSUMED**.
-- `FileTransport` is a test fake, not concurrency-hardened and not a production
-  transport.
-- Long-run/battery/network-switch behaviour of any client is unmeasured.
-
-## 8. Risks
-
-1. **Expectation risk:** Android 10+ makes fully automatic phone→laptop clipboard reads
-   impossible for a normal background app. Every honest solution needs a tap, an IME,
-   root, or ADB. A product that promises otherwise will disappoint.
-2. **Echo prevention depends on byte-stable clipboard content.** A backend that
-   re-encodes images breaks the content hash and can reintroduce loops; the engine
-   documents this. Keep image bytes verbatim.
-3. **Image size mismatch:** the protocol allows 8 MiB, Android's Binder clipboard is
-   ~1 MB. Without downscaling or a FileProvider URI, large images will fail on the
-   phone even though sync "succeeded".
-4. **Poisoned file transport:** a malformed JSONL line raises `TransportError` without
-   advancing the offset, so a wedged file blocks `recv` until the file is fixed. Fine
-   for a test fake; not production behaviour.
-5. **Outbox cap:** 64 frames; a long outage drops the oldest updates (counted in
-   `state_summary()["overflow_dropped"]`).
-6. **Restart sequence:** production should let `seq_base` default to the time-based
-   value; forcing it to 0 on restart makes the peer drop new frames as stale.
-7. **Research gaps:** Mutter/`wlr-data-control` support and Android 14–16 clipboard
-   changes are ASSUMED; verify on the target machine/phone.
-8. **Secret handling:** E2E is only as good as key distribution. Salt/passphrase must
-   never be committed, and a lost phone means rotating the key.
-
-## 9. Commands
-
-Run the tests (system Python; no installs needed):
+## 11. Commands for you
 
 ```bash
 cd "/home/harsh/Documents/GITHUB PROJECTS/clipsync-lab"
-python3 -m pytest -q
-# expected: 104 passed
-```
+git checkout integration/relay
 
-Inspect the work:
+# test (system Python; nothing to install)
+python3 -m pytest -q                       # 130 passed
+python3 -m pytest -q tests/acceptance      # 13 passed
 
-```bash
-git log --oneline --graph --all
-git branch -a
-# main, integration/research, integration/prototype
-```
+# inspect
+git log --oneline --graph -12
+git diff f9e760f..HEAD --stat
 
-Merge when ready (the brief reserves `main` for a human):
-
-```bash
+# merge when ready (main is yours; never merged by the agent)
 git checkout main
-git merge --no-ff integration/prototype
+git merge --no-ff integration/relay
 ```
 
-`integration/prototype` is a superset of `integration/research` (the research branch
-also contains an early WIP commit of the code; the prototype branch is the clean final
-history to merge). All agy job branches were already merged into the integration
-branches and deleted.
-
-## 10. Recommendation in one paragraph
-
-Own the relay: put the laptop and phone on **Tailscale/WireGuard**, run a small
-self-hosted **WebSocket relay** on the laptop, and use the `clipsync` message format
-(`kind=text|image`, MIME, content hash, per-origin seq, bounded outbox) with the
-optional **Fernet E2E** layer. Phone→laptop needs a **"Send clipboard" notification
-action / QS tile** on Android 10+ (the honest limit), and large images should go over
-the wire but onto the phone clipboard as a **downscaled image or FileProvider URI**.
-If you would rather not write the Android client, use **ClipCascade** as the turnkey
-fallback; if you only need text, **KDE Connect/GSConnect** is the zero-server option.
+See `NEEDS_HUMAN.md` for the two open human items (merge-to-main and production
+deployment hardening).
