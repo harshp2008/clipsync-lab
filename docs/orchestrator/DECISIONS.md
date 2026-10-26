@@ -127,3 +127,41 @@ before the next chunk: made `process_request` a coroutine, and suppressed the ex
 shutdown-noise fixes, not behaviour changes; full suite is 117 passed with no warnings
 and the acceptance suite passed 3x consecutively. Reasoning: cheaper and safer than a
 resume for two warning-only defects.
+
+## D17 — M2 server unit tests accepted unchanged (00:04 IST)
+Job `115f538d-1fec-4a7f-b492-99e39f52542b` added 11 tests covering the size formula,
+constructor validation, lifecycle/idempotent stop, port-conflict `OSError`, handshake
+403s, verbatim forwarding/no echo, 1009 oversize close, and stop dropping clients.
+Verify passed 128 tests on the first attempt, audit passed, and the diff contained only
+`tests/test_relay_server.py`. No edits needed. Cost 0.34 weekly / 1.18 5h.
+
+## D18 — M3 transport unit tests accepted unchanged (00:12 IST)
+Job `a1b9da5a-8e7a-4549-ba8b-b84515c4707a` added 13 tests: `relay_url`, no-I/O
+construction, pre-connect errors, FIFO/opacity with 20 mixed frames, client-side size
+limit, wrong-token/closed-port failures with thread-cleanup checks, reconnect
+True/False across a server restart, and idempotent close. Verify passed 141 tests on
+attempt 2; audit passed; only `tests/test_relay_transport.py` changed. The wrapper also
+reported a benign `plan_incomplete` warning while the job's plan showed 4/4 done and
+its verify was green, so no resume was needed. Cost 0.27 weekly / 0.96 5h.
+
+## D19 — M4 hardening and E2E tests accepted after one bookkeeping resume (00:16 IST)
+Job `d7b216f8-9c60-4f74-9e7a-87c0fb7ad981` added three engine-over-relay tests
+(bidirectional text without echo, encrypted 64 KiB image passthrough with a
+wrong-key peer dropping it, outbox flush after a relay restart) and made two
+hardening edits: `hmac.compare_digest` for the bearer token and an `RLock` lifecycle
+lock. The job reached `needs_review` solely because two checklist items said "run
+pytest" and agy treats test execution as wrapper-delegated; the wrapper's verify had
+already passed 144 tests on attempt 2 with audit pass. I resumed once with that fact
+(no code changes requested), it closed the plan (6/6) and finished `done`; I reviewed
+the diff and merged it unchanged. This is the only job state anomaly of the run and it
+was bookkeeping, not a code/test failure. Cost 0.53 weekly / 1.85 5h (including the
+resume).
+
+## D20 — Relay micro final state (00:17 IST)
+`integration/relay-micro` (from `f003260`) has the relay modules, 27 new unit tests,
+3 new E2E tests, and the orchestrator docs. Gate: `python3 -m pytest -q
+tests/acceptance` → 13 passed (also 5 consecutive runs); `python3 -m pytest -q` → 144
+passed; `git diff f003260 -- tests/acceptance` empty; suite warning-free. Quota ended
+at 20.52 weekly / 85.52 5h (floor not reached), 4 of max 6 jobs used, all cleaned up.
+`main` is untouched; merge command is in `REPORT.md`. No part of this run read any
+other relay implementation.

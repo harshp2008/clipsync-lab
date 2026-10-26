@@ -210,3 +210,121 @@ action / QS tile** on Android 10+ (the honest limit), and large images should go
 the wire but onto the phone clipboard as a **downscaled image or FileProvider URI**.
 If you would rather not write the Android client, use **ClipCascade** as the turnkey
 fallback; if you only need text, **KDE Connect/GSConnect** is the zero-server option.
+
+---
+
+# Relay micro run
+
+**Window:** 2026-10-26 23:40 → 2026-10-27 00:17 IST (deadline 02:30).
+**Branch:** `integration/relay-micro`, cut from `f003260` ("test: spec-first acceptance
+tests + contract for network relay"). `main`, `integration/relay` and
+`integration/prototype` were never committed to or merged into.
+**Result:** the relay is implemented and the gate passes — **13/13 acceptance tests,
+144/144 full suite**, frozen acceptance tests byte-identical to `f003260`.
+
+This was the micromanagement comparison run: the orchestrator split the work into four
+small chunks, one fully specified agy job per chunk, sequential, with review + merge +
+test + cleanup after each. Build was contract-only; no other relay implementation was
+read or referenced.
+
+## Chunk plan
+
+| # | Chunk | Owner | Outcome |
+|---|---|---|---|
+| M1 | `clipsync/relay_server.py` + `clipsync/relay_transport.py` | agy, reviewed by me | accepted with two warning-only edits by me |
+| M2 | `tests/test_relay_server.py` (11 unit tests) | agy | accepted unchanged |
+| M3 | `tests/test_relay_transport.py` (13 unit tests) | agy | accepted unchanged |
+| M4 | `tests/test_relay_integration.py` (3 engine-over-relay E2E tests) + hardening | agy | accepted after one plan-bookkeeping resume; merged unchanged |
+
+M1 deliberately combines the two modules: `tests/acceptance/test_relay_acceptance.py`
+imports both at module import time, so a server-only job would fail the mandated
+full-suite `verify` for reasons unrelated to its own quality.
+
+## agy jobs (one at a time, `max_minutes=30`, no `model`)
+
+| # | Job id | State | Wall | Verify | Audit | Weekly cost | 5h cost | What I fixed |
+|---|---|---|---|---|---|---|---|---|
+| M1 | `8bf328ee-6f23-4141-8164-b2db1c403410` | done | ~10.4 min | pass (117 tests) | pass | 0.46 | 1.61 | 2 warning edits: coroutine `process_request`; suppress expected `CancelledError` on transport shutdown |
+| M2 | `115f538d-1fec-4a7f-b492-99e39f52542b` | done | ~7.5 min | pass (128 tests, attempt 1) | pass | 0.34 | 1.18 | none — accepted unchanged |
+| M3 | `a1b9da5a-8e7a-4549-ba8b-b84515c4707a` | done | ~5.8 min | pass (141 tests, attempt 2) | pass | 0.27 | 0.96 | none — accepted unchanged; benign `plan_incomplete` warning |
+| M4 | `d7b216f8-9c60-4f74-9e7a-87c0fb7ad981` | needs_review → done | ~11.1 min | pass (144 tests, attempt 3) | pass | 0.53 | 1.85 | none in code; one `agy_resume` answering that the wrapper had already run and passed verify |
+| | **Total** | **4/4 done** | **~35 min** | **all pass** | **all pass** | **1.60** | **5.60** | |
+
+Quota: start **22.12% weekly / 91.12% 5h**, end **20.52% / 85.52%** — above the
+20%/15% floor, so no chunk was handed over and no 5th job was needed. Four of the
+six allowed jobs were used. Every `agy_start` was preceded by `agy_usage`; every job
+was reviewed with `agy_review`, its diff read, merged only into
+`integration/relay-micro`, retested, then cleaned with `agy_cleanup`
+(`force` never set, no `model` parameter, job branches deleted).
+
+M4's `needs_review` was purely checklist bookkeeping: agy refuses to run tests itself
+(wrapper-delegated), so two "run pytest" checklist items stayed open even though the
+wrapper's verify had already passed 144 tests. One resume with that information closed
+the plan items; no code changed after review.
+
+## What the orchestrator did directly
+
+- Split the work, wrote all four job prompts/checklists, checked quota before each
+  start, reviewed every diff, merged, and ran the full suite after each merge.
+- Post-M1: made `process_request` a coroutine (removes 25 `DeprecationWarning`s) and
+  suppressed the expected `asyncio.CancelledError` when `close()` cancels the
+  transport's connection task (removes 10 `PytestUnhandledThreadExceptionWarning`s).
+  Two shutdown-noise edits, no behaviour change; suite went from warnings-visible to
+  warning-free.
+- Post-M2/M3/M4: accepted unchanged. M4's hardening (constant-time `hmac.compare_digest`
+  bearer comparison, `RLock` lifecycle lock) and the three E2E tests were reviewed
+  line-by-line and merged as-is.
+- Wrote this report, `PLAN.md`/`DECISIONS.md`/`NEEDS_HUMAN.md` updates, and committed
+  all orchestrator docs on the integration branch.
+
+## Gate results (commands run by me, on `integration/relay-micro`)
+
+```bash
+cd "/home/harsh/Documents/GITHUB PROJECTS/clipsync-lab"
+python3 -c "import websockets; print(websockets.__version__)"   # 10.4
+python3 -m pytest -q tests/acceptance                            # 13 passed
+for i in 1 2 3 4 5; do python3 -m pytest -q tests/acceptance; done  # 13 passed x5
+python3 -m pytest -q                                             # 144 passed
+git diff f003260 -- tests/acceptance | wc -l                      # 0 (empty)
+git branch --show-current                                         # integration/relay-micro
+```
+
+Acceptance ran green five times consecutively to check the threaded/reconnect paths
+for flakiness. The suite is warning-free. `agy_list` reported zero active jobs and no
+drifted worktrees after cleanup.
+
+## How to run the tests and merge (for the human)
+
+```bash
+cd "/home/harsh/Documents/GITHUB PROJECTS/clipsync-lab"
+
+# 1. Verify the relay branch
+git checkout integration/relay-micro
+python3 -m pytest -q tests/acceptance    # expected: 13 passed
+python3 -m pytest -q                     # expected: 144 passed
+git diff f003260 -- tests/acceptance     # expected: empty
+
+# 2. Merge when ready (main is intentionally left to you)
+git checkout main
+git merge --no-ff integration/relay-micro
+python3 -m pytest -q                     # expected: 144 passed
+```
+
+Relay usage sketch (loopback only, token out of band):
+
+```python
+from clipsync.relay_server import RelayServer
+from clipsync.relay_transport import RelayTransport, relay_url
+from clipsync.engine import SyncEngine
+
+with RelayServer(token="change-me") as server:
+    t = RelayTransport(relay_url(server.port), "change-me")
+    t.connect()
+    engine = SyncEngine("laptop", clipboard, t)  # clipboard = your backend
+    engine.poll_once()
+    t.close()
+```
+
+The relay is a byte pipe: frames stay opaque, so an optional `FernetCodec` gives E2E
+privacy without the server holding a key. The phone-side client and a real `wss://`
+deployment are still human/next-run work (`NEEDS_HUMAN.md`).

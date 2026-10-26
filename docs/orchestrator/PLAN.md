@@ -170,3 +170,18 @@ Chunk plan (one small agy job each, verify `python3 -m pytest -q`, max_minutes=3
 
 After every job: `agy_review`, read the diff, merge into `integration/relay-micro`,
 run the full suite, `agy_cleanup` (never `force=true`), log decisions.
+
+## Relay micro run status (final)
+
+- 23:40 — run start; `agy_usage` 22.12% weekly / 91.12% 5h; `websockets` 10.4 present.
+- 23:41–23:52 — **M1 `8bf328ee` done**, verify green (117), audit pass; merged; two
+  warning fixes by me; cleaned up. Cost 0.46 / 1.61.
+- 23:57–00:04 — **M2 `115f538d` done**, verify green (128), audit pass; merged
+  unchanged; cleaned up. Cost 0.34 / 1.18.
+- 00:06–00:12 — **M3 `a1b9da5a` done**, verify green (141, attempt 2), audit pass;
+  merged unchanged; cleaned up. Cost 0.27 / 0.96.
+- 00:13–00:16 — **M4 `d7b216f8` needs_review (plan_incomplete)**; verify already
+  green (144); one `agy_resume` for checklist bookkeeping → done; merged unchanged;
+  cleaned up. Cost 0.53 / 1.85.
+- 00:17 — **gate passed**: acceptance 13 passed (5x), full suite 144 passed,
+  `git diff f003260 -- tests/acceptance` empty. Quota 20.52% / 85.52%; no handover.
