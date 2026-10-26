@@ -79,7 +79,7 @@ class RelayTransport:
         self._inbox: deque[bytes] = deque()
         self._inbox_lock = threading.Lock()
         self._state_lock = threading.Lock()
-        self._lifecycle_lock = threading.Lock()
+        self._lifecycle_lock = threading.RLock()
 
     @property
     def url(self) -> str:

@@ -82,6 +82,21 @@ def test_relay_transport_connect_failure_to_down_server() -> None:
     tr.close()
 
 
+def test_relay_transport_connect_failure_wrong_token() -> None:
+    """Connecting with an invalid token raises TransportError without deadlocking."""
+    with RelayServer(token="valid-token", port=0) as server:
+        tr = RelayTransport(
+            relay_url(server.port),
+            "wrong-token",
+            reconnect=False,
+            connect_timeout=1.0,
+        )
+        with pytest.raises(TransportError):
+            tr.connect()
+        assert not tr.connected
+        tr.close()
+
+
 def test_relay_transport_frame_coercion_and_non_bytes() -> None:
     """Verify frame coercion for bytearray and memoryview, and rejection of non-bytes."""
     with RelayServer(token="coerce-token", port=0) as server:
