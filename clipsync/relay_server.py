@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 from http import HTTPStatus
 import threading
 from typing import Any
@@ -166,7 +167,8 @@ class RelayServer:
             path: str, request_headers: Any
         ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes] | None:
             auth = request_headers.get("Authorization")
-            if auth != f"Bearer {self._token}":
+            expected = f"Bearer {self._token}"
+            if not isinstance(auth, str) or not hmac.compare_digest(auth, expected):
                 return (HTTPStatus.FORBIDDEN, [], b"")
             return None
 
