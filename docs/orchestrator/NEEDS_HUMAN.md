@@ -1,0 +1,18 @@
+# Needs a human
+
+Items that need the account owner, the phone, or system changes. Everything here was
+deliberately **not** done by the agent. Work continued around them.
+
+| # | Item | Why it needs you | Exact steps |
+|---|---|---|---|
+| H1 | Test the Android side on a real phone | The agent has no phone and must not touch a real clipboard | Follow `docs/android-side.md` (all three paths are UNTESTED). Start with Path C (KDE Connect) to validate pairing, then Path B (ClipCascade) for images. Record which steps fail. |
+| H2 | Tailscale account + tailnet | Account creation and network changes are out of scope | Install Tailscale on laptop and phone, `tailscale up` on both, confirm `tailscale ip -4` on the laptop. Free personal tier is enough. Do **not** commit the tailnet IP or auth keys. |
+| H3 | Own relay deployment | The loopback relay now exists (`relay_server.py` / `relay_transport.py`, 13/13 acceptance), but the phone client and a real `wss://` deployment do not | Laptop: `RelayServer(token=...)` + `RelayTransport(relay_url(port), token)`; see `REPORT.md` § "Relay micro run". Missing: the Android foreground-service WebSocket client (same `Authorization: Bearer <token>` handshake, binary frames) and a TLS/reverse-proxy or Tailscale path for `wss://`. Keep the token and E2E key out of git. See `docs/android-side.md` Path A. |
+| H4 | ClipCascade fallback deployment | Docker/Java server + sideloaded APK + ADB permissions are system/phone changes | `docker run -d --name clipcascade -p 8080:8080 -e CC_MAX_MESSAGE_SIZE_IN_MiB=8 -v ./cc_users:/database sathvikrao/clipcascade` then change the default `admin`/`admin123`. Install the APK from the ClipCascade GitHub Releases page. For automatic phone→laptop, run the three ADB commands in `docs/android-side.md` and accept the log-monitoring prompt. |
+| H5 | Pairing secret / E2E key | Generating and storing real secrets is the owner's job | Generate a salt: `python3 -c "from clipsync.crypto import new_salt; print(new_salt().hex())"`; choose a long passphrase; derive with `FernetCodec.from_passphrase(...)`; keep both out of git and screenshots. Rotate if the phone is lost. |
+| H6 | Real Wayland clipboard smoke test | `WlClipboardBackend` is unexecuted to protect your clipboard | In a scratch session (no passwords copied): `python3 -c "from clipsync.clipboard import WlClipboardBackend; print(WlClipboardBackend().read())"`. Note `wl-paste` may hang/return stale when a GNOME window is focused — that is the documented limitation. |
+| H7 | Optional: GSConnect / system tools | Installing GNOME extensions or packages is out of scope | Install GSConnect from extensions.gnome.org and KDE Connect from F-Droid/Play; pair on the same LAN. `wl-clipboard` is already present on this machine. |
+| H8 | Merge the work into `main` | `main` is reserved for you | `git checkout main && git merge --no-ff integration/relay-micro` after reading `docs/orchestrator/REPORT.md`. `relay-micro` contains the prototype, the relay and its tests. |
+| H9 | Decide build-vs-buy | Research recommends the own relay but the turnkey ClipCascade fallback is the faster path | Read `docs/research/clipboard-sync.md` §4.1–4.2 and pick: (a) build the Android client for the `clipsync` relay, or (b) run ClipCascade now and use the prototype as the owned replacement later. |
+
+_Updated at the end of the run; see `REPORT.md` for status and risks._
