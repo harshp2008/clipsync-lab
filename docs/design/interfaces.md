@@ -340,3 +340,165 @@ def relay_url(port: int, host: str = "127.0.0.1") -> str   # "ws://<host>:<port>
   live socket. With `reconnect=False`, a drop leaves the transport disconnected.
 - `send` preserves call order on a single connection; oversize frames raise
   `TransportError` client-side and are never sent. `recv` never blocks.
+
+## daemon run — config, daemon loop, relay command (2026-10-27)
+
+Additive contract for the laptop app. Acceptance tests live in
+`tests/acceptance/test_daemon_acceptance.py` and are frozen before the implementation
+job. All tests use `FakeClipboard`, `InMemoryTransport`, or `RelayTransport` against a
+loopback `RelayServer`; `WlClipboardBackend` is only ever driven by a canned
+`CommandRunner`. No test may spawn `wl-paste`/`wl-copy` or touch the real clipboard.
+
+```
+clipsync/config.py     # TOML config loader for the daemon + secret-file indirection
+clipsync/daemon.py     # ClipboardDaemon loop + `clipsync` console entry point
+clipsync/relay_cli.py  # `clipsync-relay` console entry point
+```
+
+`config.py`, `daemon.py` and `relay_cli.py` compose the existing public modules; they
+do not duplicate protocol/engine/transport logic.
+
+### config.py
+
+```python
+class ConfigError(Exception): ...
+
+@dataclass(frozen=True, slots=True)
+class DaemonConfig:
+    device_id: str
+    relay_url: str
+    token: str
+    e2e_key: str | None = None
+    poll_interval: float = 0.5
+    reconnect_delay: float = 0.2
+    connect_timeout: float = 5.0
+
+def load_config(path: str | Path) -> DaemonConfig
+```
+
+TOML keys (only these are accepted; any other top-level key is `ConfigError`):
+
+| Key | Required | Rules |
+|---|---|---|
+| `device_id` | yes | `str`, 1–128 chars after `strip()` |
+| `relay_url` | yes | `str` with scheme `ws` or `wss` and a non-empty host |
+| `token` **or** `token_file` | exactly one | inline non-empty `str`, or a path to a file whose stripped contents are the token |
+| `e2e_key` **or** `e2e_key_file` | optional, at most one | valid Fernet key (as accepted by `FernetCodec`), inline or file |
+| `poll_interval` | no (default `0.5`) | finite number `> 0` |
+| `reconnect_delay` | no (default `0.2`) | finite number `> 0` |
+| `connect_timeout` | no (default `5.0`) | finite number `> 0` |
+
+- `token` + `token_file` together, or `e2e_key` + `e2e_key_file` together, is an error.
+- A relative `token_file` / `e2e_key_file` is resolved **relative to the config file's
+  directory**, not the process CWD.
+- Secret-file contents are stripped; an empty file is an error; a missing/unreadable
+  file is a `ConfigError` naming the key.
+- `load_config` raises `ConfigError` (never leaks the token/key value) for: missing or
+  unreadable config, invalid TOML, unknown keys, missing required keys, wrong types,
+  invalid URL, invalid key, and bad numeric values.
+- Constructing the config performs **no I/O beyond reading the config/secret files**.
+
+### daemon.py
+
+```python
+class ClipboardDaemon:
+    def __init__(self, config: DaemonConfig, *,
+                 clipboard: ClipboardBackend,
+                 transport: Transport,
+                 codec: Codec | None = None) -> None
+    def connect(self) -> None            # transport.connect(); may raise TransportError
+    def poll_once(self) -> SyncStats     # one engine.poll_once() via this daemon
+    def run(self, *, stop_event: threading.Event | None = None,
+            max_iterations: int | None = None,
+            sleep: Callable[[float], None] = time.sleep) -> int
+    def close(self) -> None              # idempotent; transport.close()
+```
+
+- The daemon owns a `SyncEngine(config.device_id, clipboard, transport, codec)`. It
+  must not read/write the clipboard except through the injected backend.
+- `run`: `max_iterations` is `None` or an `int >= 0` (bools rejected with
+  `ValueError`). It polls at most that many times, checks `stop_event` before every
+  poll, and calls `sleep(config.poll_interval)` **between** polls only (no sleep after
+  the last poll or when stopping). Returns the number of polls performed.
+  `max_iterations=0` returns `0` without polling or sleeping.
+- A poll must not raise for transport/clipboard failures; the engine already counts
+  them and keeps frames queued for retry.
+
+```python
+def build_codec(config: DaemonConfig) -> Codec | None   # FernetCodec(e2e_key) or None
+def build_clipboard(config: DaemonConfig) -> ClipboardBackend  # WlClipboardBackend()
+def build_transport(config: DaemonConfig) -> Transport
+    # RelayTransport(config.relay_url, config.token,
+    #                 reconnect_delay=config.reconnect_delay,
+    #                 connect_timeout=config.connect_timeout)
+
+def main(argv: Sequence[str] | None = None, *,
+         clipboard_factory: Callable[[DaemonConfig], ClipboardBackend] | None = None,
+         transport_factory: Callable[[DaemonConfig], Transport] | None = None,
+         codec_factory: Callable[[DaemonConfig], Codec | None] | None = None) -> int
+```
+
+`main` CLI (argparse):
+
+- `--config PATH` (default `~/.config/clipsync/config.toml`), `--once`,
+  `--log-level {DEBUG,INFO,WARNING,ERROR}` (default `INFO`), `--version`.
+- Config errors: message to stderr, return **2**. `TransportError` from
+  `transport.connect()`: message to stderr, return **1**. Success: **0**.
+- `--once`: connect, poll **exactly once**, print one compact JSON object line with
+  the `SyncStats` fields to stdout, close, return 0. The JSON must be parseable and
+  include at least `sent`, `received`, `applied`, `queued`.
+- Without `--once`: connect, then `daemon.run()` until SIGINT/SIGTERM; stop cleanly,
+  close the transport, return 0.
+- Factories override the default builders (tests inject `FakeClipboard` and a
+  `WlClipboardBackend` with a canned runner). Logs to stderr; never log payload text
+  or bytes, the token, or the key.
+- `python3 -m clipsync.daemon` works (`if __name__ == "__main__"`).
+
+### relay_cli.py
+
+```python
+@dataclass(frozen=True, slots=True)
+class RelayConfig:
+    token: str
+    port: int = 8765
+    max_frame_bytes: int = RELAY_MAX_FRAME_BYTES
+    # __post_init__: ValueError for empty token, port outside 0..65535,
+    #                max_frame_bytes <= 0
+
+def build_server(config: RelayConfig) -> RelayServer
+def run_relay(config: RelayConfig, *,
+              stop_event: threading.Event | None = None,
+              on_started: Callable[[RelayServer], None] | None = None) -> int
+def main(argv: Sequence[str] | None = None, *,
+         stop_event: threading.Event | None = None,
+         on_started: Callable[[RelayServer], None] | None = None) -> int
+```
+
+- `build_server` returns `RelayServer(token=config.token, port=config.port,
+  max_frame_bytes=config.max_frame_bytes)` (loopback is enforced by the server).
+- `run_relay`: start the server, print exactly one line
+  `clipsync-relay listening on ws://127.0.0.1:<port>/` (flush), call
+  `on_started(server)` (used by tests to learn the ephemeral port), then block until
+  `stop_event` is set (or `KeyboardInterrupt`), stop the server in `finally`, return
+  0. A bind `OSError` prints an error to stderr and returns 1.
+- `main` CLI (argparse): `--token` **or** `--token-file`, `--port` (default `8765`),
+  `--max-frame-bytes` (default `RELAY_MAX_FRAME_BYTES`), `--log-level`, `--version`.
+  Missing/both token sources, unreadable token file, or invalid values: stderr +
+  return **2**. With `stop_event` supplied it must **not** install signal handlers
+  (safe off the main thread); otherwise install SIGINT/SIGTERM handlers.
+- `python3 -m clipsync.relay_cli` works (`if __name__ == "__main__"`).
+
+### Packaging and README
+
+`pyproject.toml` gains:
+
+```toml
+[project.scripts]
+clipsync = "clipsync.daemon:main"
+clipsync-relay = "clipsync.relay_cli:main"
+```
+
+`README.md` gains a `## Quickstart` section showing: start `clipsync-relay`, create the
+config + secret files, run `clipsync --config ...`, and a one-shot
+`clipsync --config ... --once`. It must state that `clipsync` is the laptop daemon,
+`clipsync-relay` is loopback-only, and both token and E2E key stay out of git.

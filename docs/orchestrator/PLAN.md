@@ -185,3 +185,50 @@ run the full suite, `agy_cleanup` (never `force=true`), log decisions.
   cleaned up. Cost 0.53 / 1.85.
 - 00:17 — **gate passed**: acceptance 13 passed (5x), full suite 144 passed,
   `git diff f003260 -- tests/acceptance` empty. Quota 20.52% / 85.52%; no handover.
+
+---
+
+# Daemon run — 2026-10-27 02:37 IST (deadline 06:00)
+
+**Workflow: GATED.** The contract (`docs/design/interfaces.md` § "daemon run") and the
+acceptance tests are written and committed before the single implementation job; the
+gate is a byte-identical `tests/acceptance` diff, a review of the job diff, merge into
+`integration/daemon`, and the acceptance + full suite run by me. Rationale: the
+deliverable is test-checkable, one cohesive laptop app, and the remaining quota only
+allows one job.
+
+- **Base commit sha: `0a1f7f47e2dd9a164106a9e7e0390e383264b4cd`** (`0a1f7f4`,
+  "Merge branch 'integration/relay-micro'", current `main`).
+- Branch: `integration/daemon`, cut from `main`.
+- Quota before the run: Gemini weekly **20.5153%**, 5h **100%**. **Run-specific floor:
+  do not start an agy job when weekly remaining is below 20.4%.** Re-check with
+  `agy_usage` immediately before the start; if below, implement the chunk myself and
+  log the handover in `DECISIONS.md`. At most one implementation job (+ at most one
+  fix job only if the floor allows).
+- Deadline: stop by **06:00 IST**; leave time for the gate and docs.
+
+## Deliverables
+
+| Chunk | Owner | Notes |
+|---|---|---|
+| Contract + frozen acceptance tests (`tests/acceptance/test_daemon_acceptance.py`) | me | committed before the job; never edited during it |
+| `clipsync/config.py` (TOML config, secret-file indirection) | agy job 1 | GATED |
+| `clipsync/daemon.py` (`ClipboardDaemon`, `clipsync` CLI, entry point) | agy job 1 | GATED |
+| `clipsync/relay_cli.py` (`clipsync-relay` CLI, entry point) | agy job 1 | GATED |
+| `pyproject.toml` console scripts + README Quickstart | agy job 1 | GATED |
+| Unit tests for the new modules | agy job 1 | travels with the implementation |
+| Gate: diff check, review, merge, acceptance + full suite | me | |
+| `PLAN`/`DECISIONS`/`REPORT` updates, final verification | me | |
+| Merge `integration/daemon` into `main` (explicitly requested this run) | me | only after the gate and full suite are green |
+
+## Gate commands
+
+```bash
+git diff 0a1f7f4 -- tests/acceptance          # must be empty
+python3 -m pytest -q tests/acceptance          # must pass
+python3 -m pytest -q                           # full suite must pass
+```
+
+Safety: every test uses `FakeClipboard`, `InMemoryTransport`, a loopback
+`RelayServer`, and a canned `CommandRunner` for `wl-clipboard`; no test may spawn
+`wl-paste`/`wl-copy` or touch the real clipboard.
