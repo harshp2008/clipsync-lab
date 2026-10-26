@@ -1,3 +1,15 @@
+> **Reviewer note (DeepSeek, orchestrator).** This file is the raw agy draft from job
+> `3f818eca`, kept for provenance. It has good breadth but several claims were marked
+> VERIFIED against pages that do not actually say them. Spot-check corrections:
+> KDE Connect uses TCP/UDP ports **1714–1764** (not "port 1716"); GSConnect is a GNOME
+> Shell extension and the "Mutter D-Bus" detail is unverified; the TLS/TOFU encryption
+> bullet is directionally right but was not confirmed from the cited page. The ntfy
+> "password-based AES-GCM E2E" bullet is **not** documented on the cited pages — treat
+> it as ASSUMED. Pushbullet/Join pricing and Firebase's Spark-vs-Blaze storage rule
+> change often — re-check before relying on them. "Tailscale + custom relay" means a
+> custom app *on top of* Tailscale, not a Tailscale feature. The authoritative,
+> claim-marked synthesis is [`clipboard-sync.md`](clipboard-sync.md).
+
 # Options landscape
 
 Synchronizing the system clipboard bidirectionally between Ubuntu GNOME Wayland and Android involves navigating significant OS-level architectural sandboxes and performance constraints. On Android 10 (API 29) and later, Google permanently blocks background applications from reading the system clipboard unless the app is the actively focused window or is designated as the default Input Method Editor (IME / software keyboard), returning null to background read attempts. On the Linux side, GNOME under Wayland strictly isolates application memory spaces and clipboard access, preventing arbitrary background daemons from passively intercepting or modifying selection buffers without active window focus or dedicated Wayland protocols (such as those wrapped by `wl-clipboard` or GNOME Shell extensions). Furthermore, while plain text clipboard payloads consist of negligible byte counts, transferring uncompressed image buffers or high-resolution screenshots introduces significant network latency, memory pressure, and protocol-specific payload serialization overhead that most lightweight signaling protocols are ill-equipped to handle without dedicated object storage or chunking.

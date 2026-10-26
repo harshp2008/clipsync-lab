@@ -44,3 +44,21 @@ are source-heavy and self-contained; R2 (GNOME Wayland + MIME limits) and R4
 (synthesis/recommendation) stay with me because they need judgement and must agree
 with the prototype. Reasoning: agy never sees this conversation, so broad-but-
 bounded web research is the best fit; synthesis is cross-cutting.
+
+## D8 — Probe result: agy can do web research, and it is cheap (20:41 IST)
+Job `ed2ece76`: state done, audit passed, verify passed, 6.9 min, 0.27 weekly / 0.94
+5h pct points. `search_web` works; page fetching is limited. Quality is usable but
+over-confident: it marked Android 10 background *writes* and "Android 14/15/16
+continuity" as VERIFIED citing pages that do not say that. Assignment reasoning: keep
+agy on source-heavy breadth research (R3) but every claim gets spot-checked by me
+before it reaches `clipboard-sync.md`; R1 is downgraded from a separate agy job to
+"probe draft + my verification", which frees quota for code jobs.
+
+## D9 — KDE Connect is text-only, verified (20:47 IST)
+KDE UserBase's Clipboard plugin section says "Share the clipboard between devices ...
+This does not work with images though", and documents the Android 10+ manual "Send
+Clipboard" notification action, the Android 14+ Quick Settings tile, and the
+READ_LOGS/Magisk workarounds. Assignment reasoning: this single primary source
+disqualifies KDE Connect as the *recommended* option for this brief (images are a hard
+requirement) and supports it as a text-only fallback; the custom relay becomes the
+prototype target.

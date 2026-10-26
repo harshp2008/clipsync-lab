@@ -70,3 +70,16 @@ DECISIONS.md (one line of reasoning per change).
 ## Status log
 
 - 20:36 IST — scaffolding done; `agy_usage` baseline: weekly 24.4%, 5h 99.2%.
+- 20:41 IST — **job 1 (probe) done** `ed2ece76`: 6.9 min, 1 commit, verify passed,
+  audit passed, cost **0.27 weekly / 0.94 5h pct points**. Web research works
+  (`search_web`); page-fetch tools limited. Quality: good version coverage, but 2–3
+  over-claims marked VERIFIED (background *writes*, Android 14–16 "continuity").
+  Plan update: probe output is the R1 draft, and R1 becomes "agy draft + my
+  verification" rather than a second agy job — saves a job for code.
+- 20:44 IST — **job 2 started** `3f818eca`: 10-option landscape (R3). Weekly before
+  start 24.16%, 5h 98.25% — above the 20%/15% floor.
+- 20:47 IST — I verified KDE Connect from its own UserBase docs: clipboard plugin is
+  **text only** ("does not work with images"), Android 10+ auto-sync needs a manual
+  "Send clipboard" notification action, Android 14+ has a QS tile, and READ_LOGS /
+  Magisk are the only automatic workarounds. This corrects the "images everywhere"
+  assumption in some community posts.

@@ -104,7 +104,7 @@ Helpers:
 ```python
 def text_payload(text: str, mime: str = "text/plain") -> ClipPayload
 def image_payload(data: bytes, mime: str) -> ClipPayload
-def canonical_json(obj: Mapping) -> bytes   # sorted keys, ", " / ": " separators, UTF-8
+def canonical_json(obj: Mapping) -> bytes   # sorted keys, compact ","/":" separators, UTF-8, no \\u escaping
 def encode_frame(msg: ClipMessage) -> bytes  # canonical_json(msg.to_wire())
 def decode_frame(frame: bytes) -> ClipMessage  # JSON parse + from_wire
 ```
