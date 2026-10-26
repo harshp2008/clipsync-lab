@@ -23,6 +23,50 @@ an account, the phone, or system changes is in
 | [`docs/android-side.md`](docs/android-side.md) | Exact phone steps (UNTESTED). |
 | [`docs/orchestrator/`](docs/orchestrator/) | Plan, decisions, needs-human, final report. |
 
+## Quickstart
+
+`clipsync` is the laptop daemon that syncs clipboard events between the local clipboard backend and the relay, while `clipsync-relay` is the loopback-only relay server.
+
+> **Security Note**: Both the shared bearer token and the optional E2E encryption key must stay out of git (e.g. stored in `~/.config/clipsync/` or secret files with restricted permissions `0600`).
+
+### 1. Start the loopback relay
+
+Start `clipsync-relay` on loopback (default port 8765):
+
+```bash
+# Save token in a file (ensure it stays out of git)
+echo "my-secret-token" > ~/.config/clipsync/token.txt
+chmod 600 ~/.config/clipsync/token.txt
+
+# Run loopback-only relay
+clipsync-relay --token-file ~/.config/clipsync/token.txt --port 8765
+```
+
+### 2. Configure the daemon
+
+Create `~/.config/clipsync/config.toml`:
+
+```toml
+device_id = "laptop"
+relay_url = "ws://127.0.0.1:8765/"
+token_file = "token.txt"
+poll_interval = 0.5
+```
+
+### 3. Run the daemon
+
+Run a one-shot sync to test connectivity and output JSON statistics:
+
+```bash
+clipsync --config ~/.config/clipsync/config.toml --once
+```
+
+Or run the continuous laptop daemon:
+
+```bash
+clipsync --config ~/.config/clipsync/config.toml
+```
+
 ## Run the tests
 
 No phone, network or real clipboard needed. Uses the system Python (no installs):
