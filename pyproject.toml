@@ -9,6 +9,10 @@ description = "Two-way clipboard sync prototype (text + images) for GNOME Waylan
 requires-python = ">=3.11"
 dependencies = ["cryptography>=41"]
 
+[project.scripts]
+clipsync = "clipsync.daemon:main"
+clipsync-relay = "clipsync.relay_cli:main"
+
 [project.optional-dependencies]
 test = ["pytest>=7"]
 

@@ -328,3 +328,105 @@ with RelayServer(token="change-me") as server:
 The relay is a byte pipe: frames stay opaque, so an optional `FernetCodec` gives E2E
 privacy without the server holding a key. The phone-side client and a real `wss://`
 deployment are still human/next-run work (`NEEDS_HUMAN.md`).
+
+---
+
+# Daemon run
+
+**Window:** 2026-10-27 02:37 → ~02:56 IST (deadline 06:00; finished early).
+**Branch:** `integration/daemon`, cut from `main` at `0a1f7f4`; merged into `main`
+with `--no-ff` after the gate because the request said "on main, add".
+**Workflow:** GATED — contract + 34 acceptance tests committed at `3df64e0` before the
+single implementation job. **Result:** the laptop app is implemented and green:
+**34/34 acceptance, 186/186 full suite**, job branch acceptance diff empty, audit
+passed, worktree cleaned up.
+
+## Deliverables
+
+| Deliverable | Where | State |
+|---|---|---|
+| Config from files (relay URL, token, E2E key; TOML + secret-file indirection) | `clipsync/config.py` | complete |
+| Daemon loop wiring clipboard backend ↔ relay transport | `clipsync/daemon.py` (`ClipboardDaemon`) | complete |
+| `clipsync` console command (`--config`, `--once`, `--log-level`, `--version`, graceful SIGINT/SIGTERM) | `clipsync/daemon.py`, `[project.scripts]` | complete |
+| `clipsync-relay` command (`--token`/`--token-file`, `--port`, `--max-frame-bytes`) | `clipsync/relay_cli.py`, `[project.scripts]` | complete |
+| Unit tests for config/daemon/relay CLI | `tests/test_config.py`, `tests/test_daemon.py`, `tests/test_relay_cli.py` | complete |
+| Frozen acceptance suite + daemon contract | `tests/acceptance/test_daemon_acceptance.py`, `docs/design/interfaces.md` | complete |
+| README quickstart | `README.md` § Quickstart | complete |
+| Orchestrator docs | `docs/orchestrator/{PLAN,DECISIONS,NEEDS_HUMAN,REPORT}.md` | complete |
+
+## Job
+
+| Job id | State | Wall | Commits | Verify | Audit | Weekly cost | 5h cost |
+|---|---|---|---|---|---|---|---|
+| `54f33781-39b2-426b-b286-38f17844fd87` | done | ~11.9 min | 7 | 186 passed (attempt 2) | passed | 0.78 | 2.72 |
+
+Quota before start **20.5153% weekly / 100% 5h**, checked immediately before
+`agy_start`; the run-specific floor was **20.4% weekly**. After the job/cleanup:
+**19.739% / 97.28%** — below the floor, so **no second/fix job** was started; the two
+small corrections below were mine, recorded in `DECISIONS.md` D22–D23.
+
+## Gate evidence (run by me)
+
+```bash
+git diff 3df64e0 -- tests/acceptance          # 0 lines on the job branch
+python3 -m pytest -q tests/acceptance          # 34 passed (4x consecutively)
+python3 -m pytest -q                           # 186 passed
+git diff 3df64e0 -- clipsync/clipboard.py      # 0 lines after my revert
+```
+
+The first wrapper verify failed on one acceptance test because **my fixture was
+wrong**: it advertised `text/plain` **and** `image/png`, while `choose_mime`
+deliberately prefers images, so the backend read the image type. The job "fixed" this
+by reordering `choose_mime` to prefer text — a contract regression I rejected. I
+reverted `clipsync/clipboard.py` to its base version and changed the fixture to
+advertise text only. The image-preference path remains covered by the existing
+`test_choose_mime` cases. A job-added `WlClipboardBackend.choose_mime` alias was
+dropped with the revert. This is the only deviation from a clean accept.
+
+## What the implementation does
+
+- `load_config` is strict: only the documented TOML keys, exactly one of
+  `token`/`token_file` and at most one of `e2e_key`/`e2e_key_file`, relative secret
+  paths resolved against the config directory, `ws`/`wss` URLs, positive finite
+  timings, and Fernet-key validation. Errors never echo secret values.
+- `ClipboardDaemon` owns a `SyncEngine` and only touches the injected backend. `run`
+  checks `stop_event` before each poll, sleeps only between polls, and returns the
+  poll count. Defaults build `WlClipboardBackend` and `RelayTransport`; tests inject
+  fakes.
+- `clipsync --once` connects, polls once, prints a compact JSON `SyncStats` line, and
+  exits; continuous mode runs until SIGINT/SIGTERM. Exit codes: 0 success, 1 connect
+  failure, 2 config/CLI error.
+- `clipsync-relay` runs the loopback-only server, prints the bound URL once, supports
+  an ephemeral port (`--port 0`), and stops cleanly. Signal handlers are skipped when
+  a `stop_event` is injected, so tests can run it off the main thread.
+- Tests use `FakeClipboard`, `InMemoryTransport`, loopback ephemeral relays and a
+  canned `CommandRunner`; **no test executes `wl-paste`/`wl-copy` or reads/writes the
+  real clipboard**.
+
+## How to run (human)
+
+```bash
+cd "/home/harsh/Documents/GITHUB PROJECTS/clipsync-lab"
+python3 -m pytest -q                         # 186 passed
+python3 -m pytest -q tests/acceptance        # 34 passed
+
+# Optional: install the two console commands, then follow README Quickstart.
+python3 -m pip install --user -e .
+
+clipsync-relay --token-file ~/.config/clipsync/token.txt --port 8765
+clipsync --config ~/.config/clipsync/config.toml --once   # JSON stats
+clipsync --config ~/.config/clipsync/config.toml          # continuous
+```
+
+`main` now contains the app; no merge is pending. This run did not push, force, install
+packages, change system settings, or start the daemon against the real clipboard.
+
+## Not done / risks
+
+- Real `WlClipboardBackend` reads/writes and the real daemon loop on a live GNOME
+  session remain unexecuted (by design; see NEEDS_HUMAN H6/H10).
+- The Android client and a real `wss://` deployment are still missing (H3).
+- The relay is loopback-only by design; remote use needs Tailscale/reverse proxy (H2).
+- Config secrets are protected only by file permissions; the README says `chmod 600`
+  and keep them out of git. There is no keyring integration.
+- The daemon's continuous loop has no metrics endpoint; it logs to stderr only.

@@ -185,3 +185,73 @@ run the full suite, `agy_cleanup` (never `force=true`), log decisions.
   cleaned up. Cost 0.53 / 1.85.
 - 00:17 — **gate passed**: acceptance 13 passed (5x), full suite 144 passed,
   `git diff f003260 -- tests/acceptance` empty. Quota 20.52% / 85.52%; no handover.
+
+---
+
+# Daemon run — 2026-10-27 02:37 IST (deadline 06:00)
+
+**Workflow: GATED.** The contract (`docs/design/interfaces.md` § "daemon run") and the
+acceptance tests are written and committed before the single implementation job; the
+gate is a byte-identical `tests/acceptance` diff, a review of the job diff, merge into
+`integration/daemon`, and the acceptance + full suite run by me. Rationale: the
+deliverable is test-checkable, one cohesive laptop app, and the remaining quota only
+allows one job.
+
+- **Base commit sha: `0a1f7f47e2dd9a164106a9e7e0390e383264b4cd`** (`0a1f7f4`,
+  "Merge branch 'integration/relay-micro'", current `main`).
+- Branch: `integration/daemon`, cut from `main`.
+- Quota before the run: Gemini weekly **20.5153%**, 5h **100%**. **Run-specific floor:
+  do not start an agy job when weekly remaining is below 20.4%.** Re-check with
+  `agy_usage` immediately before the start; if below, implement the chunk myself and
+  log the handover in `DECISIONS.md`. At most one implementation job (+ at most one
+  fix job only if the floor allows).
+- Deadline: stop by **06:00 IST**; leave time for the gate and docs.
+
+## Deliverables
+
+| Chunk | Owner | Notes |
+|---|---|---|
+| Contract + frozen acceptance tests (`tests/acceptance/test_daemon_acceptance.py`) | me | committed before the job; never edited during it |
+| `clipsync/config.py` (TOML config, secret-file indirection) | agy job 1 | GATED |
+| `clipsync/daemon.py` (`ClipboardDaemon`, `clipsync` CLI, entry point) | agy job 1 | GATED |
+| `clipsync/relay_cli.py` (`clipsync-relay` CLI, entry point) | agy job 1 | GATED |
+| `pyproject.toml` console scripts + README Quickstart | agy job 1 | GATED |
+| Unit tests for the new modules | agy job 1 | travels with the implementation |
+| Gate: diff check, review, merge, acceptance + full suite | me | |
+| `PLAN`/`DECISIONS`/`REPORT` updates, final verification | me | |
+| Merge `integration/daemon` into `main` (explicitly requested this run) | me | only after the gate and full suite are green |
+
+## Gate commands
+
+```bash
+git diff 0a1f7f4 -- tests/acceptance          # must be empty
+python3 -m pytest -q tests/acceptance          # must pass
+python3 -m pytest -q                           # full suite must pass
+```
+
+Safety: every test uses `FakeClipboard`, `InMemoryTransport`, a loopback
+`RelayServer`, and a canned `CommandRunner` for `wl-clipboard`; no test may spawn
+`wl-paste`/`wl-copy` or touch the real clipboard.
+
+## Daemon run status (final)
+
+- 02:37 — run start. `agy_usage`: Gemini weekly **20.5153%**, 5h **100%**; run
+  floor **20.4% weekly**. `integration/daemon` cut from `main` (`0a1f7f4`).
+- 02:38 — workflow GATED: contract section added to `docs/design/interfaces.md`, 34
+  acceptance tests in `tests/acceptance/test_daemon_acceptance.py`, plan committed at
+  **`3df64e0`**. `main` untouched.
+- 02:40 — **job `54f33781` started** (config + daemon + relay CLI + entry points +
+  README + unit tests), verify `python3 -m pytest -q`, max 45 min. Usage checked
+  immediately before start: 20.5153% >= 20.4%.
+- 02:52 — **job done**: 7 commits, ~11.9 min, verify **186 passed** on attempt 2,
+  audit passed, plan 9/9. Cost **0.78 weekly / 2.72 5h** points.
+- Gate: job-branch diff against `3df64e0` for `tests/acceptance` was **empty**. Review
+  found one out-of-scope change (`clipsync/clipboard.py` reordered MIME preference to
+  satisfy a bad orchestrator fixture) — reverted. My acceptance fixture wrongly
+  advertised both text and image; corrected to text-only. Then 34 acceptance passed
+  4x and the full suite **186 passed**.
+- Cleanup: worktree + job branch removed (no force). Quota after cleanup **19.739%
+  weekly / 97.28% 5h** — below the 20.4% run floor, so no fix job; remaining fixes
+  were done by me and logged in `DECISIONS.md`.
+- Merged `integration/daemon` into `main` with `--no-ff` (explicitly requested this
+  run), then re-ran acceptance + full suite on `main`.
