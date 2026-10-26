@@ -141,19 +141,195 @@ _Detailed per-option notes (verified/assumed, pricing, limits) are in
 [`agy-options-landscape.md`](agy-options-landscape.md). Summary and comparison are
 below._
 
-<!-- SECTION_2_SUMMARY -->
+## 2. The options
+
+Full per-option notes (mechanism, pricing, limits, sources) are in
+[`agy-options-landscape.md`](agy-options-landscape.md); this is the decision-relevant
+summary. Options cluster into five families.
+
+**A. Peer-to-peer LAN tools**
+
+1. **KDE Connect / GSConnect** — mature, free, no account, paired over the LAN
+   (UDP discovery, TCP/UDP 1714–1764). Text is bidirectional; **images are explicitly
+   not supported** by the clipboard plugin. On Android 10+, phone→laptop is a manual
+   "Send clipboard" notification action (QS tile on Android 14+) unless you use the
+   READ_LOGS/Magisk workaround; desktop→phone is automatic. GSConnect is the
+   GNOME-Shell-native variant and is the best Wayland story of any option.
+   [VERIFIED] [KDE UserBase](https://userbase.kde.org/KDEConnect)
+2. **Syncthing-based** — Syncthing is file sync, not clipboard sync; you build
+   watcher scripts that write `clipboard.txt`/`clip.png` into a shared folder. Text
+   and images both work as files, but the glue is fragile and the Android watcher hits
+   the same background-read wall. [ASSUMED] High effort, high maintenance.
+
+**B. Push / notification relays**
+
+3. **ntfy** — simple HTTP pub/sub with Android push. Text can be delivered and copied
+   with a notification action; image attachments are possible but are not injected
+   into the clipboard automatically, and the free hosted tier caps attachments at
+   2 MB. Self-hostable. Its E2E story is not documented on the pages checked here, so
+   do not assume it. [VERIFIED for service/limits](https://docs.ntfy.sh/publish/#attachments) [ASSUMED for E2E]
+4. **Pushbullet-style** (Pushbullet, Join) — cloud account, closed clients, text-only
+   universal copy/paste (images not supported by the automatic path), paid tier
+   (~$5/mo Pushbullet Pro). No maintained native Linux/Wayland client. [VERIFIED for features](https://blog.pushbullet.com/2014/08/20/introducing-universal-copy-paste/) [ASSUMED for pricing/current state]
+
+**C. Self-hosted clipboard servers (the turnkey end of the spectrum)**
+
+5. **ClipCascade** — Docker/JAR server, desktop clients (including a Linux CLI with
+   native-Wayland `wl-paste --watch` + polling fallback) and an Android APK. Text,
+   images and files; optional **client-side E2E** with a shared salt and PBKDF-style
+   key derivation. Android automatic phone→laptop uses the same ADB `READ_LOGS` +
+   overlay workaround as KDE Connect; without it you use the app's manual actions.
+   Default server message cap is **1 MiB**, configurable (`CC_MAX_MESSAGE_SIZE_IN_MiB`)
+   or bypassed in P2P mode; large images need that raised.
+   [VERIFIED] [ClipCascade README](https://github.com/Sathvik-Rao/ClipCascade)
+6. **SyncClipboard** — .NET server, or WebDAV/S3 storage, or the desktop client's
+   built-in server. Text/images/files, desktop clients for Linux/Windows/macOS, and
+   several Android clients: manual notification-triggered, AutoJs6 overlay, and the
+   **Fcitx5 IME plugin** which gets seamless phone→laptop by riding the IME
+   exemption. Linux docs recommend installing `wl-clipboard` on Wayland. HTTPS is
+   supported; E2E is not advertised, so the server sees content unless you add it.
+   [VERIFIED] [SyncClipboard README](https://github.com/Jeric-X/SyncClipboard)
+
+**D. Build-it-yourself**
+
+7. **Tailscale + custom relay** — put the laptop and phone on a WireGuard tailnet and
+   run your own small HTTP/WebSocket relay (on the laptop or a VPS). You control the
+   message format, image cap, E2E and reconnect logic; you also own the Android client
+   and its battery/background behaviour. [VERIFIED for Tailscale pricing/transport](https://tailscale.com/pricing)
+8. **Plain WebSocket relay** — the same idea without Tailscale; needs `wss://` plus
+   auth, or it is plaintext on the wire. Custom client required. [ASSUMED]
+9. **Termux + Tasker / HTTP Shortcuts** — scripted glue: Tasker/HTTP Shortcuts trigger
+   HTTP calls, Termux pushes/pulls. Text works; Termux's clipboard API is text-only;
+   Tasker can handle image URIs but background clipboard reads are still restricted.
+   High effort, brittle. [VERIFIED for Termux API limits](https://github.com/termux/termux-api) [ASSUMED for Tasker specifics]
+
+**E. Cloud backends**
+
+10. **Firebase Firestore/Realtime DB** — realtime sync for free, but Firestore
+    documents are hard-capped at **1 MiB**, so images need Cloud Storage, an account,
+    and custom clients on both ends. [VERIFIED for the 1 MiB limit](https://firebase.google.com/docs/firestore/quotas)
+11. **Supabase** — Postgres + Realtime + Storage; 50 MB objects, free tier with
+    project pausing after inactivity. Also needs a custom Android client. Pricing/limits
+    should be re-checked before committing. [ASSUMED]
+
+**What this means:** only the custom relay (D) and the self-hosted servers (C) satisfy
+"both directions **and** images **and** no third-party cloud" at once. KDE Connect
+wins on setup and Wayland integration but loses images and automatic phone→laptop.
+
 
 ---
 
 ## 3. Comparison
 
-<!-- SECTION_3_TABLE -->
+## 3. Comparison
+
+Scale: Reliability = how often a copy lands without babysitting; Setup/Maintenance =
+effort. "Manual" means a tap per phone→laptop transfer is required by Android 10+.
+
+| Option | Reliability | Images | Both directions | Phone app | Server / account | Cost | Privacy / encryption | Setup | Wayland | Maintenance |
+|---|---|---|---|---|---|---|---|---|---|---|
+| KDE Connect / GSConnect | Medium | **No** | Text: yes; phone→laptop manual | KDE Connect (FOSS) | None (LAN) | Free | TLS, TOFU pairing | Low | **Best** (GSConnect in Shell) | Low |
+| Syncthing + scripts | Low | Yes (as files) | Yes, via scripts | Syncthing-Fork | Discovery/relay, no account | Free | Device-to-device TLS | High | Poor (watch needs focus) | High |
+| ntfy | Low–Medium | Attachments only, not auto-clipboard | Yes, with two topics | ntfy (FOSS) | Public or self-host | Free / ~$5 mo | TLS; E2E not confirmed | Medium | Poor | Low–Medium |
+| Pushbullet / Join | Medium (text) | **No** | Yes (text) | Closed app | Account, cloud | ~$5/mo or one-off | E2E on Pushbullet | Low | No native client | Low |
+| Tailscale + custom relay | **High** if built well | **Yes** | **Yes** | Custom or Termux | Tailscale acct + relay | Free (self-host) | WireGuard + optional E2E | High | Custom `wl-clipboard` | Medium |
+| ClipCascade | Medium–High | **Yes** | **Yes** (manual or ADB workaround) | ClipCascade APK | Self-host Docker/JAR | Free (GPL) | Optional client-side E2E | Medium | Native Wayland + polling fallback | Medium |
+| SyncClipboard | Medium–High | **Yes** | **Yes** (manual / IME plugin) | Several Android clients | Self-host / WebDAV / S3 | Free | TLS; no built-in E2E | Medium | `wl-clipboard` + input perms | Medium |
+| Termux + Tasker / HTTP Shortcuts | Low–Medium | Tasker yes, Termux text-only | Manual | Tasker ($), Termux, HTTP Shortcuts | None | ~$3.49 Tasker | Depends on SSH/TLS | High | `wl-clipboard` | High |
+| Firebase Firestore/RTDB | Medium–High | Via Storage; 1 MiB doc cap | Yes | Custom | Google account | Free tier / Blaze | TLS; Google sees data unless client E2E | High | `wl-clipboard` | Medium |
+| Plain WebSocket relay | High if built | Yes | Yes | Custom | Self-host | Free | `wss` + auth + optional E2E | High | `wl-clipboard` | Medium |
+
+Two rows deserve emphasis: **GSConnect** is the least-effort Wayland-native text
+option, and **ClipCascade** is the least-effort option that actually does images.
+Everything that solves both directions and images without a third-party cloud requires
+either running a server (ClipCascade/SyncClipboard) or building a client (custom relay).
+
 
 ---
 
 ## 4. Recommendation, fallback, and privacy
 
-<!-- SECTION_4_RECOMMENDATION -->
+## 4. Recommendation, fallback, and privacy
+
+### 4.1 Recommendation — own the relay: Tailscale + a small self-hosted clipsync relay
+
+Recommended architecture (the laptop side is prototyped in `clipsync/`):
+
+- **Network:** laptop and phone join a private **Tailscale/WireGuard** tailnet
+  (free tier covers this). No port forwarding, no public listener; the relay binds to
+  the tailnet address.
+- **Transport:** a small WebSocket (or HTTP long-poll) relay on the laptop, with
+  per-device auth tokens. The prototype's `Transport` interface is the seam: tests use
+  `InMemoryTransport` and `FileTransport`, production plugs in a WebSocket adapter.
+- **Message format:** `ClipMessage{origin, seq, payload, content_hash, msg_id}`, with
+  payload `kind=text|image`, MIME, and a size cap. Content-hash echo prevention,
+  per-origin sequence ordering, msg-id dedup, bounded outbox + replay on reconnect —
+  all implemented and tested in `clipsync/engine.py`.
+- **Images:** cap at 8 MiB in the protocol, but on Android keep the *clipboard* entry
+  under the ~1 MB Binder ceiling by downscaling/re-encoding or by putting a
+  FileProvider **content URI** on the clipboard. Transfer the full image over the
+  relay; put a URI on the clip.
+- **Crypto:** optional Fernet (AES-CBC + HMAC) frame encryption with a key derived by
+  scrypt from a shared passphrase + random salt. The relay then sees ciphertext.
+- **Phone→laptop:** be honest — on stock Android 10+ the client cannot silently read
+  the clipboard. Expose a **notification action / QS tile / share target** that uploads
+  the current clip (one tap), and optionally add a later IME-based mode for fully
+  automatic capture. Laptop→phone can be automatic (write the clip on receive).
+- **Why this one:** it is the only design here that delivers **text + images, both
+  directions, no third-party cloud, E2E, and full control of the Android build** — and
+  the laptop half is already implemented and tested in this repo. The cost is real:
+  you must write and maintain the small Android foreground-service client.
+
+### 4.2 Fallback — ClipCascade (turnkey, same architecture)
+
+If you do not want to own an Android client, **ClipCascade** is the fallback and the
+honest "works this weekend" choice: self-hosted Docker/JAR, text/images/files,
+optional client-side E2E, native-Wayland Linux client, and an Android APK. Two
+caveats, both verified in its README: the default message cap is **1 MiB** (raise
+`CC_MAX_MESSAGE_SIZE_IN_MiB` or use P2P mode for larger images), and fully automatic
+phone→laptop needs the ADB `READ_LOGS` + overlay workaround; otherwise you use its
+manual actions. Its default admin password must be changed before exposing it.
+[VERIFIED] [ClipCascade](https://github.com/Sathvik-Rao/ClipCascade)
+
+If you only need **text** and want zero servers, use **KDE Connect/GSConnect**; it is
+the lowest-effort option and the most Wayland-native, but it does not sync images and
+phone→laptop is manual on Android 10+.
+
+If you want images *and* seamless phone→laptop without ADB, **SyncClipboard +
+Fcitx5-SyncClipboard** is the interesting niche: the IME plugin rides Android's IME
+exemption, at the cost of using that keyboard. [VERIFIED] [SyncClipboard](https://github.com/Jeric-X/SyncClipboard)
+
+### 4.3 Privacy and threat note
+
+- Clipboard content routinely contains passwords, 2FA codes, addresses and private
+  messages. Treat any sync path as handling secrets.
+- **E2E is the difference between "the relay can't read it" and "trust the operator".**
+  With plaintext relays (ntfy public topics, `ws://`, a cloud DB) the server, its
+  backups, and anyone with the token can read clips. Use the Fernet layer and a
+  passphrase that is not stored with the salt.
+- **Metadata still leaks:** timing, sizes, and device identifiers tell an observer when
+  you copy and roughly how much. Tailscale hides the path, not the pattern.
+- **Endpoints are the weakest link:** malware or a malicious app on either device can
+  read the clipboard. Android shows a preview and auto-clears after ~1 hour; the sync
+  tool should honor `EXTRA_IS_SENSITIVE` and skip sensitive clips.
+- **Retention:** the relay should keep clips in memory only, never on disk, and the
+  local-file transport should be a test tool with `0600` permissions, not production.
+- **Key handling:** generate the salt randomly, distribute the passphrase out of band,
+  rotate on device loss, and never commit keys to git.
+- **No real credentials or cloud projects were created in this run;** anything needing
+  an account, phone, or system change is listed in `docs/orchestrator/NEEDS_HUMAN.md`.
+
+### 4.4 What is not verified
+
+- Android 14/15/16 clipboard specifics beyond the documented Android 10/12/13 changes:
+  no primary source found for new read/write relaxations; the "nothing relaxed" claim
+  is **[ASSUMED]**.
+- Mutter lacking `wlr-data-control`: **[ASSUMED]** from indirect bug reports; worth a
+  30-second check on the target machine (`wl-paste --watch` while another window is
+  focused).
+- Background `setPrimaryClip` on stock Android 15/16, OEM battery killers, and the
+  real-world reliability of every phone-side flow: **UNTESTED** here; needs the phone.
+
 
 ---
 

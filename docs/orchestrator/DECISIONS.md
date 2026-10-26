@@ -62,3 +62,13 @@ READ_LOGS/Magisk workarounds. Assignment reasoning: this single primary source
 disqualifies KDE Connect as the *recommended* option for this brief (images are a hard
 requirement) and supports it as a text-only fallback; the custom relay becomes the
 prototype target.
+
+## D10 — Recommendation: own relay primary, ClipCascade fallback (21:05 IST)
+Primary: Tailscale/WireGuard + a small self-hosted relay, with the `clipsync` message
+format/E2E/engine prototyped here. Fallback: **ClipCascade** (Docker, text/images/
+files, optional client-side E2E, Android APK, native-Wayland Linux client) because it
+is the turnkey version of the same architecture; the prototype is the laptop side of
+the primary option. Text-only zero-server fallback: KDE Connect/GSConnect. Assignment
+reasoning: the recommendation is cross-cutting synthesis, so I own it; agy's option
+survey fed it but its over-claims were corrected and ClipCascade/SyncClipboard were
+re-verified from their READMEs.

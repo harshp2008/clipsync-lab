@@ -83,3 +83,14 @@ DECISIONS.md (one line of reasoning per change).
   "Send clipboard" notification action, Android 14+ has a QS tile, and READ_LOGS /
   Magisk are the only automatic workarounds. This corrects the "images everywhere"
   assumption in some community posts.
+- 20:58 IST — **job 2 (options) done** `3f818eca`: 9.3 min, cost **0.33 weekly /
+  1.17 5h pct points**, verify + audit passed. Quality: good breadth, but several
+  VERIFIED markers were overstated. Kept as a raw artifact with a reviewer-corrections
+  banner; I verified ClipCascade/SyncClipboard from their READMEs and wrote the
+  decision-grade §2–§4 myself. Merged; cleaned up.
+- 21:00 IST — **job 3 started** `1929b570`: `clipsync/protocol.py` +
+  `tests/test_protocol.py` against `docs/design/interfaces.md`. Weekly before start
+  23.82%, 5h 97.08% — above floor.
+- 21:05 IST — research synthesis complete: comparison table + recommendation
+  (own relay via Tailscale + clipsync, fallback ClipCascade, text-only KDE Connect)
+  and privacy note written into `docs/research/clipboard-sync.md`.
