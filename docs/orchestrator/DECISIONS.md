@@ -83,3 +83,9 @@ deeply-nested JSON could raise `RecursionError` — acceptable for a prototype, 
 REPORT risks. Assignment reasoning: protocol was the best-specified chunk (exact
 formula + 24 acceptance tests) and agy executed it cleanly, so no rework needed; I kept
 the trust-boundary review myself.
+
+## D12 — Prototype branch cut after transport (21:20 IST)
+`integration/prototype` branches from `integration/research` now that all code modules
+exist and the full suite is green (103 tests). Remaining doc/report work lands there so
+the final branch is self-contained. Assignment reasoning: the android doc is
+self-contained docs work, so it goes to agy as job 5; I keep the report/merges.

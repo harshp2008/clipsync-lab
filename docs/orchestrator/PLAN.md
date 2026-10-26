@@ -102,3 +102,10 @@ DECISIONS.md (one line of reasoning per change).
   tests now run against it (**52 passed**). Cleaned up.
 - 21:14 IST — **job 4 started** `d0121297`: `clipsync/transport.py` +
   `tests/test_transport.py`. Weekly before start 23.33%, 5h 95.36%.
+- 21:18 IST — **job 4 (transport) done** `d0121297`: 8.1 min, cost **0.38 weekly /
+  1.33 5h pct points**, 32 tests, verify + audit passed. Reviewed: one JSONL file per
+  direction, exact byte offsets, partial trailing line left unread, malformed line ->
+  TransportError, path-safe ids, fsync on send. Merged; **full suite 103 passed**
+  (protocol + clipboard + crypto + transport + engine). Cleaned up.
+- 21:20 IST — branched `integration/prototype` from `integration/research`; remaining
+  work (android doc, report, final verify) happens there. `main` still untouched.
