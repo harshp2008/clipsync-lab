@@ -324,9 +324,11 @@ def test_daemon_with_matching_e2e_codec_syncs() -> None:
 
 
 def test_daemon_drives_wl_backend_with_canned_runner_only() -> None:
+    # Advertise text only: choose_mime intentionally prefers images when both are
+    # offered, so a mixed listing would take the image path (covered elsewhere).
     runner = CannedRunner(
         [
-            (0, b"text/plain\nimage/png\n", b""),
+            (0, b"text/plain\n", b""),
             (0, "copied on the laptop".encode("utf-8"), b""),
         ]
     )
