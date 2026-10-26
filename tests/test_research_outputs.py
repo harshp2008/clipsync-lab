@@ -39,3 +39,17 @@ def test_options_doc_covers_all_ten_options() -> None:
     assert not missing, f"options doc is missing sections: {missing}"
     assert "verified" in text and "https://" in text
     assert len(text) > 3000, "options doc looks too short to be a real survey"
+
+
+ANDROID_DOC = Path("docs/android-side.md")
+
+
+def test_android_doc_covers_all_three_paths() -> None:
+    assert ANDROID_DOC.is_file(), f"missing {ANDROID_DOC}"
+    text = ANDROID_DOC.read_text(encoding="utf-8")
+    low = text.lower()
+    required = ["untested", "tailscale", "clipcascade", "kde connect", "adb", "termux"]
+    missing = [name for name in required if name not in low]
+    assert not missing, f"android doc is missing: {missing}"
+    assert "encrypt" in low, "android doc must explain the encryption/pairing step"
+    assert len(text) > 2500, "android doc looks too short to be exact"
