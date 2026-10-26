@@ -94,3 +94,11 @@ DECISIONS.md (one line of reasoning per change).
 - 21:05 IST — research synthesis complete: comparison table + recommendation
   (own relay via Tailscale + clipsync, fallback ClipCascade, text-only KDE Connect)
   and privacy note written into `docs/research/clipboard-sync.md`.
+- 21:12 IST — **job 3 (protocol) done** `1929b570`: 8.6 min, cost **0.49 weekly /
+  1.73 5h pct points**, 2 commits, 24 tests, verify + audit passed (a
+  `plan_incomplete` warning appeared but the wrapper's plan showed 6/6 done and the
+  verify ran green). Reviewed the diff: strict validation, exact hash formula, compact
+  canonical JSON, base64 validate=True, truncated repr. Merged; my clipboard+crypto
+  tests now run against it (**52 passed**). Cleaned up.
+- 21:14 IST — **job 4 started** `d0121297`: `clipsync/transport.py` +
+  `tests/test_transport.py`. Weekly before start 23.33%, 5h 95.36%.

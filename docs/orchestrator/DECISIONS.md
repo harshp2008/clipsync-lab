@@ -72,3 +72,14 @@ the primary option. Text-only zero-server fallback: KDE Connect/GSConnect. Assig
 reasoning: the recommendation is cross-cutting synthesis, so I own it; agy's option
 survey fed it but its over-claims were corrected and ClipCascade/SyncClipboard were
 re-verified from their READMEs.
+
+## D11 — Protocol accepted as-is (21:12 IST)
+Job `1929b570` produced a 391-line `protocol.py` and 24 tests. I read the whole diff:
+frozen-dataclass `object.__setattr__` is used correctly, the hash matches the contract
+exactly, `from_wire` rejects wrong version/id/hash/seq/origin/timestamp/base64, unknown
+keys are ignored, and `canonical_json` is compact/sorted/no-ASCII-escape. One residual
+edge: `decode_frame` maps only `UnicodeDecodeError`/`JSONDecodeError`, so pathological
+deeply-nested JSON could raise `RecursionError` — acceptable for a prototype, noted in
+REPORT risks. Assignment reasoning: protocol was the best-specified chunk (exact
+formula + 24 acceptance tests) and agy executed it cleanly, so no rework needed; I kept
+the trust-boundary review myself.
