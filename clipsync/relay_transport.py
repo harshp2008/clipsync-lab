@@ -63,7 +63,7 @@ class RelayTransport:
         self._closed: bool = False
         self._inbox: collections.deque[bytes] = collections.deque()
         self._inbox_lock = threading.Lock()
-        self._lifecycle_lock = threading.Lock()
+        self._lifecycle_lock = threading.RLock()
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
