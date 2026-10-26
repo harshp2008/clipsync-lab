@@ -100,13 +100,10 @@ class SubprocessRunner:
 def choose_mime(types: Iterable[str]) -> str | None:
     """Pick the best supported MIME type from a ``wl-paste --list-types`` listing.
 
-    Text/plain takes precedence when plain text is offered. For other clipboard
-    selections (such as images which may advertise text/html or text/uri-list fallbacks),
-    supported images win over rich text.
+    Images win over text: copying a screenshot or an image usually also advertises
+    ``text/html``/``text/uri-list`` fallbacks, and the image is what the user meant.
     """
     offered = {t.strip().lower() for t in types if t and t.strip()}
-    if "text/plain" in offered:
-        return "text/plain"
     for mime in _IMAGE_PREFERENCE:
         if mime in offered:
             return mime
@@ -149,10 +146,6 @@ class WlClipboardBackend:
     @staticmethod
     def build_write_command(mime: str) -> list[str]:
         return ["wl-copy", "--type", mime]
-
-    @staticmethod
-    def choose_mime(types: Iterable[str]) -> str | None:
-        return choose_mime(types)
 
     # -- real operations ------------------------------------------------------
     def _run(self, argv: list[str], stdin: bytes | None = None) -> bytes:
