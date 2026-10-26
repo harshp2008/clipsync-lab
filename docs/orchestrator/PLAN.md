@@ -121,3 +121,29 @@ recorded in DECISIONS.md (D8–D13) with a one-line reasoning.
 - 21:22 IST — **plan complete.** Final `pytest -q`: **104 passed**. Floor never
   reached (weekly ended 22.69%, 5h 93.14%). 5 of max 7 agy jobs used, all `done`, all
   audits passed. `REPORT.md` written; `main` untouched. Only NEEDS_HUMAN items remain.
+
+---
+
+# Relay run — 2026-10-26 22:20 IST (deadline 02:30)
+
+Separate run on branch `integration/relay`, branched from `integration/prototype`.
+
+- **Base commit sha: `f9e760fcae13899b735c34c1ebbbda38897fb0cc`** (`f9e760f`,
+  "docs: fix interface comment escaping"). `main` and `integration/prototype` are
+  never committed to or merged into.
+- `websockets` 10.4 is installed -> the relay uses real WebSockets (no stdlib
+  fallback, no pip install).
+- Quota before the run: Gemini weekly **22.69%**, 5h **93.14%**. Floor for this run:
+  weekly >= 22%, 5h >= 15%; re-check with `agy_usage` before *every* `agy_start`.
+  Max 2 jobs total (1 build + at most 1 fix).
+- Plan:
+  1. mine: acceptance tests in `tests/acceptance/` against the contract (committed
+     before any implementation job), exact list in `REPORT.md`;
+  2. agy job 1 (only big job): `relay_server.py` + `relay_transport.py` + its own
+     unit tests, `verify = python3 -m pytest -q`, `max_minutes=30`, no `model`,
+     forbidden to touch `tests/acceptance/`;
+  3. mine: the gate — diff check on `tests/acceptance`, `agy_review`, read the
+     diff, merge into `integration/relay`, run acceptance + full suite myself;
+  4. on failure: at most one short fix job if quota allows, otherwise I fix it and
+     log the handover in `DECISIONS.md`;
+  5. mine: `REPORT.md`/`DECISIONS.md`, `agy_cleanup` (never `force=true`).

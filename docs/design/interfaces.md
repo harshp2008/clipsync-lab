@@ -273,3 +273,70 @@ frame applied once, same content re-copied after a different payload applies aga
 oversized image rejected, out-of-order/stale seq never regresses clipboard, reconnect
 flushes outbox without duplicates, encrypted+plaintext engines interoperate only with
 matching keys.
+
+## relay_server.py / relay_transport.py (network relay)
+
+Additive contract for the relay run (2026-10-26). The relay is a byte pipe: frames are
+opaque bytes, possibly E2E ciphertext; the server never parses or decrypts them and
+never needs a key. Transports remain synchronous, as in `transport.py`.
+
+`websockets` (10.4) is available and is the implementation; the server and client run
+their asyncio loops in their own background threads behind the synchronous API.
+
+### relay_server.py
+
+```python
+RELAY_MAX_FRAME_BYTES: int   # 4 * ((MAX_IMAGE_BYTES + 2) // 3) + 8192, i.e. base64
+                             # expansion of the largest legal image payload + JSON slack
+
+class RelayServer:
+    def __init__(self, *, token: str, host: str = "127.0.0.1", port: int = 0,
+                 max_frame_bytes: int = RELAY_MAX_FRAME_BYTES) -> None
+    @property host -> str
+    @property port -> int          # actual bound port (useful with port=0)
+    @property running -> bool
+    def start(self) -> None        # bind + serve in a background thread; returns when listening
+    def stop(self) -> None         # idempotent; closes clients and releases the port
+    def __enter__ / __exit__
+```
+
+- Loopback only: `host` must be exactly `"127.0.0.1"`; any other value (including
+  `"0.0.0.0"`, `"::"`, `"localhost"`, hostnames) raises `ValueError`. Empty `token`
+  raises `ValueError`. `port=0` binds an ephemeral port.
+- Authentication: every client sends `Authorization: Bearer <token>` in the WebSocket
+  handshake. Missing/wrong token is rejected during the handshake (HTTP 403) and the
+  connection is not registered.
+- Forwarding: every message received from a client is forwarded verbatim to every
+  *other* connected client, never back to the sender. Order is preserved per
+  connection. No persistence, no replay.
+- Size: a frame longer than `max_frame_bytes` is rejected: the offending connection is
+  closed (code 1009) and the frame is not forwarded. `start`/`stop` may raise `OSError`
+  if the port is taken.
+
+### relay_transport.py
+
+```python
+class RelayTransport:            # satisfies transport.Transport
+    def __init__(self, url: str, token: str, *,
+                 max_frame_bytes: int = RELAY_MAX_FRAME_BYTES,
+                 reconnect: bool = True,
+                 reconnect_delay: float = 0.2,
+                 connect_timeout: float = 5.0) -> None
+    @property url -> str
+    def connect(self) -> None    # raises TransportError if the first connect fails
+    def close(self) -> None      # idempotent; stops reconnecting
+    @property connected -> bool
+    def send(self, frame: bytes) -> None    # TransportError if not connected / oversize
+    def recv(self) -> list[bytes]           # drains FIFO, TransportError if not connected
+
+def relay_url(port: int, host: str = "127.0.0.1") -> str   # "ws://<host>:<port>/"
+```
+
+- `url` is a `ws://127.0.0.1:<port>/` URL; the token travels in the handshake header,
+  never in the URL. Constructing the object performs no I/O.
+- `connect()` returns once authenticated/serving, raising `TransportError` if that does
+  not happen within `connect_timeout`. With `reconnect=True`, an unexpected drop is
+  retried every `reconnect_delay` until success or `close()`; `connected` reflects the
+  live socket. With `reconnect=False`, a drop leaves the transport disconnected.
+- `send` preserves call order on a single connection; oversize frames raise
+  `TransportError` client-side and are never sent. `recv` never blocks.
