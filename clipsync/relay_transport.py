@@ -217,6 +217,9 @@ class RelayTransport:
         self._send_lock = asyncio.Lock()
         try:
             loop.run_until_complete(self._connection_loop())
+        except asyncio.CancelledError:
+            # close() cancels the connection task; this is an orderly shutdown.
+            pass
         finally:
             with contextlib.suppress(Exception):
                 loop.run_until_complete(loop.shutdown_asyncgens())

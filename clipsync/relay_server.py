@@ -162,7 +162,7 @@ class RelayServer:
             self._loop = None
 
     async def _serve(self) -> None:
-        def process_request(
+        async def process_request(
             path: str, request_headers: Any
         ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes] | None:
             auth = request_headers.get("Authorization")

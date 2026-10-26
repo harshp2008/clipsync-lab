@@ -115,3 +115,15 @@ at import time: any single-module job would fail the mandated full-suite verify 
 reasons unrelated to its own quality. Every job is reviewed, merged only into
 `integration/relay-micro`, tested, then cleaned up. `f003260` is the acceptance-test
 baseline. No other relay implementation is consulted (contract-only run).
+
+## D16 — M1 accepted with two orchestrator warning fixes (23:56 IST)
+Job `8bf328ee-6f23-4141-8164-b2db1c403410` (M1) produced `relay_server.py` (248
+lines) and `relay_transport.py` (278 lines); its verify run passed 117 tests, but the
+tail showed 25 `process_request` DeprecationWarnings and 10
+`PytestUnhandledThreadExceptionWarning`s from an `asyncio.CancelledError` escaping the
+transport's shutdown path. I read the merged diff, then made two small edits myself
+before the next chunk: made `process_request` a coroutine, and suppressed the expected
+`CancelledError` from the connection task after `close()` cancels it. These are
+shutdown-noise fixes, not behaviour changes; full suite is 117 passed with no warnings
+and the acceptance suite passed 3x consecutively. Reasoning: cheaper and safer than a
+resume for two warning-only defects.
