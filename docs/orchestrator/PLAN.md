@@ -109,3 +109,7 @@ DECISIONS.md (one line of reasoning per change).
   (protocol + clipboard + crypto + transport + engine). Cleaned up.
 - 21:20 IST — branched `integration/prototype` from `integration/research`; remaining
   work (android doc, report, final verify) happens there. `main` still untouched.
+- 21:22 IST — **job 5 started** `3bf97154`: Android-side guide (Path A own relay,
+  Path B ClipCascade, Path C KDE Connect), all UNTESTED. Weekly before start 22.95%,
+  5h 94.02%. This is the last planned agy job (5 of max 7); remaining work is report +
+  final verification, which is mine.
