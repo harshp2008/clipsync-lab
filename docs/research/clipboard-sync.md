@@ -137,15 +137,10 @@ image support by accident.
 
 ## 2. The options
 
-_Detailed per-option notes (verified/assumed, pricing, limits) are in
-[`agy-options-landscape.md`](agy-options-landscape.md). Summary and comparison are
-below._
-
-## 2. The options
-
 Full per-option notes (mechanism, pricing, limits, sources) are in
 [`agy-options-landscape.md`](agy-options-landscape.md); this is the decision-relevant
-summary. Options cluster into five families.
+summary. The eleven concrete options (the brief's ten families, with self-hosted split
+into the two usable projects) cluster into five families.
 
 **A. Peer-to-peer LAN tools**
 
@@ -237,6 +232,7 @@ effort. "Manual" means a tap per phone→laptop transfer is required by Android 
 | SyncClipboard | Medium–High | **Yes** | **Yes** (manual / IME plugin) | Several Android clients | Self-host / WebDAV / S3 | Free | TLS; no built-in E2E | Medium | `wl-clipboard` + input perms | Medium |
 | Termux + Tasker / HTTP Shortcuts | Low–Medium | Tasker yes, Termux text-only | Manual | Tasker ($), Termux, HTTP Shortcuts | None | ~$3.49 Tasker | Depends on SSH/TLS | High | `wl-clipboard` | High |
 | Firebase Firestore/RTDB | Medium–High | Via Storage; 1 MiB doc cap | Yes | Custom | Google account | Free tier / Blaze | TLS; Google sees data unless client E2E | High | `wl-clipboard` | Medium |
+| Supabase | Medium–High | Yes (Storage; 50 MB objects) | Yes | Custom | Supabase account or self-host | Free tier / paid | TLS + RLS; server sees data unless client E2E | High | `wl-clipboard` | Medium |
 | Plain WebSocket relay | High if built | Yes | Yes | Custom | Self-host | Free | `wss` + auth + optional E2E | High | `wl-clipboard` | Medium |
 
 Two rows deserve emphasis: **GSConnect** is the least-effort Wayland-native text

@@ -118,7 +118,7 @@ If you need immediate text sync before the custom native client is written, use 
 
 ### Step 6: Acceptance Checklist for Path A Implementation [UNTESTED]
 Once the client component is built, verify the pipeline against these gates:
-- [ ] **Text Laptop → Phone:** Copy text on laptop; phone clipboard updates silently; Android 13+ preview toast confirms paste.
+- [ ] **Text Laptop → Phone:** Copy text on laptop; phone clipboard updates silently; Android 13+ shows its copy preview when the clip is set.
 - [ ] **Text Phone → Laptop:** Copy text on phone; tap "Send Clipboard" QS tile or notification button; laptop clipboard reflects content.
 - [ ] **Image Laptop → Phone:** Copy PNG/JPEG on laptop; arrives on phone and pastes into messaging apps without Binder `TransactionTooLargeException`.
 - [ ] **Image Phone → Laptop:** Share/send image on phone; laptop clipboard receives `image/png` or `image/jpeg` verifiable with `wl-paste --type image/png`.
@@ -141,12 +141,16 @@ docker run -d \
   --name clipcascade \
   --restart unless-stopped \
   -p 8080:8080 \
-  -e CC_ADMIN_PASSWORD="<pick-a-strong-admin-password>" \
   -e CC_MAX_MESSAGE_SIZE_IN_MiB=8 \
+  -v ./cc_users:/database \
   sathvikrao/clipcascade:latest
 ```
 > [!CAUTION]
-> You must change the default password (`admin123`) immediately upon deployment using `CC_ADMIN_PASSWORD` or the web administration panel.
+> The server starts with default credentials **`admin` / `admin123`**. There is no
+> documented admin-password environment variable in the upstream README, so log in to
+> `http://localhost:8080` and change the password in the web admin panel immediately.
+> If the laptop is on a tailnet, bind the port to the tailnet address
+> (`-p <tailnet-ip>:8080:8080`) rather than all interfaces.
 
 ### Step 2: Install Android APK [UNTESTED]
 1. Download the latest APK release (`app-release.apk`) directly from the upstream GitHub repository: `https://github.com/Sathvik-Rao/ClipCascade/releases`.
@@ -172,9 +176,9 @@ By default, sending clips from Android to the laptop requires tapping a notifica
 3. On the laptop, run the three upstream commands:
    ```bash
    # [FROM UPSTREAM DOCS, UNTESTED]
-   adb shell pm grant com.sathvikrao.clipcascade android.permission.READ_LOGS
-   adb shell appops set com.sathvikrao.clipcascade SYSTEM_ALERT_WINDOW allow
-   adb shell am force-stop com.sathvikrao.clipcascade
+   adb shell pm grant com.clipcascade android.permission.READ_LOGS
+   adb shell appops set com.clipcascade SYSTEM_ALERT_WINDOW allow
+   adb shell am force-stop com.clipcascade
    ```
 4. Disconnect USB and re-open the ClipCascade app.
 5. When starting the service, accept the system log-monitoring prompt.
@@ -204,7 +208,7 @@ KDE Connect / GSConnect provides zero-server peer-to-peer synchronization over y
   # [FROM UPSTREAM DOCS, UNTESTED]
   sudo apt install gnome-shell-extension-gsconnect
   ```
-  *(Note: GSConnect runs natively inside GNOME Shell's compositor, avoiding Wayland background focus restrictions).*
+  *(Note [ASSUMED]: GSConnect runs as a GNOME Shell extension, so it is not subject to the focus rule the way a plain background process is).*
 - **Android Phone:** Install **KDE Connect** from F-Droid or Google Play Store.
 
 ### Step 2: Network and Firewall Configuration [UNTESTED]

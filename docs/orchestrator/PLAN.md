@@ -12,24 +12,24 @@ chunks; at most 1 agy job running at a time and at most 7 agy jobs total; call
 
 ## Assignment table
 
-Owners are provisional until the agy probe result lands; updates recorded in
-DECISIONS.md (one line of reasoning per change).
+Owners are the **final** assignment after the run; every change from the initial plan is
+recorded in DECISIONS.md (D8–D13) with a one-line reasoning.
 
 | Chunk | Owner | Why that owner | Depends on | Expected agy cost |
 |---|---|---|---|---|
 | **R0** Probe: Android background clipboard restrictions + does agy do web research at all | agy | Cheapest possible read-only job; measures both research ability and quota cost before committing larger chunks | repo scaffolding (done) | 0.5–1.5% weekly |
-| **R1** Research §1a: Android clipboard background restrictions by version (10→15) | agy (if probe OK) | Self-contained, source-heavy, exactly what agy is good at | R0 | ~1–2% weekly |
+| **R1** Research §1a: Android clipboard background restrictions by version (10→15) | agy draft + me | Self-contained, source-heavy, exactly what agy is good at | R0 | ~1–2% weekly |
 | **R2** Research §1b: GNOME Wayland clipboard access + image MIME/size limits | me | Small, needs judgement about what is authoritative; cheap to write myself | R0 | 0 |
-| **R3** Research §2: options landscape (KDE Connect/GSConnect, Syncthing, ntfy, Pushbullet-style, Tailscale+custom, self-hosted servers, Termux+Tasker/HTTP Shortcuts, Firebase, Supabase, plain WebSocket relay) | agy (if quota) | Self-contained breadth work; agy polls the web and drafts; I verify | R0 | ~2–3% weekly |
+| **R3** Research §2: options landscape (KDE Connect/GSConnect, Syncthing, ntfy, Pushbullet-style, Tailscale+custom, self-hosted servers, Termux+Tasker/HTTP Shortcuts, Firebase, Supabase, plain WebSocket relay) | agy | Self-contained breadth work; agy polls the web and drafts; I verify | R0 | ~2–3% weekly |
 | **R4** Research §3: comparison table + §4 recommendation/fallback/privacy | me | Synthesis, cross-cutting, depends on every other section; the recommendation must match the prototype | R1,R2,R3 | 0 |
 | **P1** Prototype design: interfaces, message format, invariants | me | Cross-cutting contract; writing it myself is what makes agy modules fit together | R4 (option choice) | 0 |
-| **P2** `clipsync/protocol.py` + `tests/test_protocol.py` | agy (if quota) | Exactly-specified module against a frozen interface doc | P1 | ~2–3% weekly |
+| **P2** `clipsync/protocol.py` + `tests/test_protocol.py` | agy | Exactly-specified module against a frozen interface doc | P1 | ~2–3% weekly |
 | **P3** `clipsync/clipboard.py` (fake + unexecuted wl-clipboard) | me | Small, safety-critical (must never run the real clipboard); not worth a prompt | P1 | 0 |
-| **P4** `clipsync/transport.py` (in-memory + local-file fakes) | agy (if quota) | Self-contained module with clear semantics | P1 | ~2–3% weekly |
+| **P4** `clipsync/transport.py` (in-memory + local-file fakes) | agy | Self-contained module with clear semantics | P1 | ~2–3% weekly |
 | **P5** `clipsync/engine.py` (echo-loop prevention, dedup, ordering, reconnect) | me | Most subtle logic; failure modes are the whole point of the prototype | P2,P3,P4 | 0 |
 | **P6** `clipsync/crypto.py` optional E2E layer | me | Security-sensitive; short | P1 | 0 |
 | **P7** Integration/end-to-end tests (loops, dedup, large images, ordering, reconnect) | me + agy (unit tests with module) | E2E is cross-cutting; unit tests travel with the module job | P2–P6 | included above |
-| **P8** `docs/android-side.md` (exact phone steps, UNTESTED) | agy (if quota) | Self-contained docs chunk; I review for accuracy | R4 | ~1% weekly |
+| **P8** `docs/android-side.md` (exact phone steps, UNTESTED) | agy + my fixes | Self-contained docs chunk; I review for accuracy | R4 | ~1% weekly |
 | **P9** Orchestrator REPORT + final verify + merges | me | Requires the whole conversation | all | 0 |
 
 ## Phases
@@ -113,3 +113,11 @@ DECISIONS.md (one line of reasoning per change).
   Path B ClipCascade, Path C KDE Connect), all UNTESTED. Weekly before start 22.95%,
   5h 94.02%. This is the last planned agy job (5 of max 7); remaining work is report +
   final verification, which is mine.
+
+- 21:18 IST — **job 5 (android doc) done** `3bf97154`: 6.1 min, cost **0.25 weekly /
+  0.88 5h pct points**, verify + audit passed. Reviewed; fixed two invented facts
+  (non-existent `CC_ADMIN_PASSWORD` env var, wrong `com.sathvikrao.clipcascade`
+  package id) and marked the GSConnect claim ASSUMED. Merged; cleaned up.
+- 21:22 IST — **plan complete.** Final `pytest -q`: **104 passed**. Floor never
+  reached (weekly ended 22.69%, 5h 93.14%). 5 of max 7 agy jobs used, all `done`, all
+  audits passed. `REPORT.md` written; `main` untouched. Only NEEDS_HUMAN items remain.

@@ -89,3 +89,19 @@ the trust-boundary review myself.
 exist and the full suite is green (103 tests). Remaining doc/report work lands there so
 the final branch is self-contained. Assignment reasoning: the android doc is
 self-contained docs work, so it goes to agy as job 5; I keep the report/merges.
+
+
+## D13 — Android guide merged with two factual corrections (21:18 IST)
+Job `3bf97154` produced a well-structured guide but invented a `CC_ADMIN_PASSWORD`
+Docker env var (not in the ClipCascade README) and used the wrong Android package id
+(`com.sathvikrao.clipcascade`; the README's ADB commands use `com.clipcascade`). I
+replaced the Docker block with the README's command + default-credential warning,
+fixed the package id, and marked the GSConnect Wayland claim `[ASSUMED]`. Reasoning:
+these are two-line fixes, so editing them was cheaper and safer than an `agy_resume`;
+the doc is still marked UNTESTED throughout.
+
+## D14 — Final state (21:22 IST)
+Plan complete. 104 tests pass; 5/5 agy jobs done and audited; 1.72 weekly / 6.05 5h
+points spent; floor never reached. `integration/prototype` is the merge candidate;
+`main` is untouched. Only `NEEDS_HUMAN.md` items remain (phone test, accounts/system
+changes, build-vs-buy decision, merge to main).
