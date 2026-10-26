@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
+from typing import Callable
 
 import pytest
 import websockets
@@ -34,6 +36,16 @@ def _ws_url(port: int) -> str:
 def _auth_headers(token: str = TOKEN) -> dict[str, str]:
     """Return standard Bearer authorization headers."""
     return {"Authorization": f"Bearer {token}"}
+
+
+async def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> bool:
+    """Wait asynchronously until predicate returns True or timeout expires."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.005)
+    return bool(predicate())
 
 
 # -- Constant and Constructor Validation ------------------------------------
@@ -149,7 +161,7 @@ def test_handshake_auth_valid_token() -> None:
             url = _ws_url(server.port)
             async with websockets.connect(url, extra_headers=_auth_headers()) as ws:
                 assert not ws.closed
-                assert len(server._clients) == 1
+                assert await _wait_until(lambda: len(server._clients) == 1)
 
         asyncio.run(_test())
 
@@ -199,6 +211,8 @@ def test_forwarding_verbatim_and_no_echo() -> None:
             headers = _auth_headers()
             async with websockets.connect(url, extra_headers=headers) as ws_a:
                 async with websockets.connect(url, extra_headers=headers) as ws_b:
+                    assert await _wait_until(lambda: len(server._clients) == 2)
+
                     # Non-JSON byte frame with nulls and high bytes
                     binary_payload = bytes(range(256)) + b"\x00\xff\r\n{'not': 'json'}"
                     await ws_a.send(binary_payload)
@@ -242,6 +256,8 @@ def test_oversize_frame_closes_offender_with_1009() -> None:
                 async with websockets.connect(
                     url, extra_headers=headers, max_size=None
                 ) as ws_offender:
+                    assert await _wait_until(lambda: len(server._clients) == 2)
+
                     oversize_data = b"M" * (limit + 64)
                     try:
                         await ws_offender.send(oversize_data)
@@ -264,6 +280,8 @@ def test_oversize_frame_closes_offender_with_1009() -> None:
                 async with websockets.connect(
                     url, extra_headers=headers, max_size=None
                 ) as ws_legal:
+                    assert await _wait_until(lambda: len(server._clients) == 2)
+
                     legal_data = b"legal frame within 256 bytes"
                     assert len(legal_data) <= limit
                     await ws_legal.send(legal_data)
@@ -287,7 +305,7 @@ def test_stop_drops_connected_clients() -> None:
             ws = await websockets.connect(url, extra_headers=_auth_headers())
             try:
                 assert not ws.closed
-                assert len(server._clients) == 1
+                assert await _wait_until(lambda: len(server._clients) == 1)
 
                 # Stop server in a worker thread so client event loop can process close frame
                 await asyncio.to_thread(server.stop)
