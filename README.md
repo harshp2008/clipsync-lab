@@ -3,9 +3,9 @@
 Investigation + prototype for reliable **two-way clipboard sync (text and images)**
 between an Ubuntu GNOME **Wayland** laptop and an **Android** phone.
 
-Status: research complete, laptop-side prototype complete with tests. The phone-side
-steps are documented but **untested** (no phone access in this run); anything needing
-an account, the phone, or system changes is in
+Status: research complete; laptop-side app complete (daemon, relay command, config,
+tests). The phone-side steps are documented but **untested** (no phone access in this
+run); anything needing an account, the phone, or system changes is in
 [`docs/orchestrator/NEEDS_HUMAN.md`](docs/orchestrator/NEEDS_HUMAN.md).
 
 ## What is here
@@ -20,25 +20,40 @@ an account, the phone, or system changes is in
 | `clipsync/transport.py` | `InMemoryTransport` + `FileTransport` fakes carrying opaque byte frames. |
 | `clipsync/crypto.py` | Optional Fernet E2E codec + scrypt key derivation. |
 | `clipsync/engine.py` | Two-way loop: echo prevention, dedup, ordering, reconnect/outbox. |
+| `clipsync/relay_server.py` / `relay_transport.py` | Loopback-only WebSocket relay and its synchronous client transport. |
+| `clipsync/config.py` | TOML config loader for the daemon; token/E2E key may come from files. |
+| `clipsync/daemon.py` | `ClipboardDaemon` loop and the `clipsync` console command. |
+| `clipsync/relay_cli.py` | `clipsync-relay` console command. |
 | [`docs/android-side.md`](docs/android-side.md) | Exact phone steps (UNTESTED). |
 | [`docs/orchestrator/`](docs/orchestrator/) | Plan, decisions, needs-human, final report. |
 
 ## Quickstart
 
-`clipsync` is the laptop daemon that syncs clipboard events between the local clipboard backend and the relay, while `clipsync-relay` is the loopback-only relay server.
+`clipsync` is the laptop daemon that wires a clipboard backend to the relay, while
+`clipsync-relay` is the loopback-only relay server. From the repo root, install the
+console commands once (the runtime dependency is already in `pyproject.toml`):
 
-> **Security Note**: Both the shared bearer token and the optional E2E encryption key must stay out of git (e.g. stored in `~/.config/clipsync/` or secret files with restricted permissions `0600`).
+```bash
+python3 -m pip install --user -e .
+```
+
+Without installing, the same commands work as `python3 -m clipsync.daemon ...` and
+`python3 -m clipsync.relay_cli ...`.
+
+> **Security:** the shared bearer token and the optional E2E key must stay out of git.
+> Keep them in `~/.config/clipsync/` with `chmod 600`; never commit or screenshot them.
 
 ### 1. Start the loopback relay
 
 Start `clipsync-relay` on loopback (default port 8765):
 
 ```bash
-# Save token in a file (ensure it stays out of git)
-echo "my-secret-token" > ~/.config/clipsync/token.txt
+mkdir -p ~/.config/clipsync
+# Long random token, kept out of git
+python3 -c "import secrets; print(secrets.token_urlsafe(32))" > ~/.config/clipsync/token.txt
 chmod 600 ~/.config/clipsync/token.txt
 
-# Run loopback-only relay
+# Run the loopback-only relay (port 0 picks an ephemeral port)
 clipsync-relay --token-file ~/.config/clipsync/token.txt --port 8765
 ```
 
@@ -50,8 +65,21 @@ Create `~/.config/clipsync/config.toml`:
 device_id = "laptop"
 relay_url = "ws://127.0.0.1:8765/"
 token_file = "token.txt"
+# Optional end-to-end encryption: same key on every peer, never committed.
+# e2e_key_file = "e2e.key"
 poll_interval = 0.5
 ```
+
+To enable E2E, generate a Fernet key and point the config at it:
+
+```bash
+python3 -c "from clipsync.crypto import FernetCodec; print(FernetCodec.generate().key.decode())" \
+  > ~/.config/clipsync/e2e.key
+chmod 600 ~/.config/clipsync/e2e.key
+```
+
+Relative `token_file` / `e2e_key_file` paths resolve against the directory containing
+`config.toml`.
 
 ### 3. Run the daemon
 
@@ -76,17 +104,21 @@ python3 -m pytest -q
 ```
 
 The suite covers protocol validation/oversized payloads, clipboard command building
-with a canned runner, crypto round-trip/tamper, transport delivery/partial lines, and
-engine echo-loop/dedup/ordering/reconnect tests.
+with a canned runner, crypto round-trip/tamper, transport delivery/partial lines,
+engine echo-loop/dedup/ordering/reconnect, the loopback relay, and the daemon/config/
+CLI wiring. Config/CLI tests use fake clipboards and a canned `CommandRunner`.
 
 ## Safety
 
 - Tests never read or write the real clipboard; `WlClipboardBackend` is implemented
-  but not executed.
-- No network calls, no credentials, no system changes, no ports opened.
+  but only driven through canned `CommandRunner` fakes, never through `wl-paste`/
+  `wl-copy`.
+- Relay/daemon tests bind loopback-only ephemeral ports; no external network calls,
+  real credentials, or system changes are used.
 - `FileTransport` is a test fake; do not treat it as a production transport.
 
 ## Branches
 
-`main` holds only the initial commit. Work is on `integration/research` and
-`integration/prototype`; see the report for the merge command.
+`main` carries the current line: research, prototype, relay, and the laptop daemon.
+Feature work happens on `integration/*` branches (`research`, `prototype`, `relay`,
+`relay-micro`, `daemon`); see `docs/orchestrator/REPORT.md` for history.

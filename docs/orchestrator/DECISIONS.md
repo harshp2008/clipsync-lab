@@ -165,3 +165,32 @@ passed; `git diff f003260 -- tests/acceptance` empty; suite warning-free. Quota 
 at 20.52 weekly / 85.52 5h (floor not reached), 4 of max 6 jobs used, all cleaned up.
 `main` is untouched; merge command is in `REPORT.md`. No part of this run read any
 other relay implementation.
+
+## D21 — Daemon run: GATED, one frozen acceptance suite, one job (02:38 IST)
+Contract + 34 acceptance tests committed at `3df64e0` before any implementation. The
+laptop app is test-checkable and cohesive, so GATED fits; quota (20.5153% weekly)
+allowed exactly one job above the run's 20.4% floor. Branch `integration/daemon` from
+`main`. The user explicitly asked for the app on `main`, so after the gate + local
+re-verification I merged the integration branch into `main` with `--no-ff`; no push.
+Job `54f33781-39b2-426b-b286-38f17844fd87`.
+
+## D22 — Gate: rejected an unrelated clipboard change, fixed my own fixture (02:53 IST)
+The job passed verify (186 tests, attempt 2) and left `tests/acceptance` byte-identical
+(0-line diff vs `3df64e0`), but its diff also changed `clipsync/clipboard.py`:
+`choose_mime` now returned `text/plain` before images and gained a
+`WlClipboardBackend.choose_mime` alias. That contradicts the frozen contract
+("Images win over text") and was only there to satisfy my acceptance fixture, which
+wrongly advertised `text/plain` **and** `image/png` and then expected the text read
+command. I reverted `clipsync/clipboard.py` to the base version and corrected the
+fixture to advertise `text/plain` only (the image path is already covered by
+`test_choose_mime`). Decision: never accept a behaviour regression to make a bad test
+pass. Also rejected a job-added `WlClipboardBackend.choose_mime` alias as unnecessary.
+After the corrections: acceptance 34 passed four times, full suite 186 passed.
+
+## D23 — No fix job; self-fixes and final merge (02:54 IST)
+`agy_usage` after cleanup was **19.739% weekly**, below this run's 20.4% floor, so I did
+not start/resume another job. The two fixes above were made by me, re-tested, and
+documented. `integration/daemon` was merged into `main` (`--no-ff`) because the direct
+request said "on main, add"; `main` was then re-verified (`34` acceptance / `186`
+full). No push, no force, no system changes. Worktree + job branch cleaned up with
+`force` false.

@@ -232,3 +232,26 @@ python3 -m pytest -q                           # full suite must pass
 Safety: every test uses `FakeClipboard`, `InMemoryTransport`, a loopback
 `RelayServer`, and a canned `CommandRunner` for `wl-clipboard`; no test may spawn
 `wl-paste`/`wl-copy` or touch the real clipboard.
+
+## Daemon run status (final)
+
+- 02:37 — run start. `agy_usage`: Gemini weekly **20.5153%**, 5h **100%**; run
+  floor **20.4% weekly**. `integration/daemon` cut from `main` (`0a1f7f4`).
+- 02:38 — workflow GATED: contract section added to `docs/design/interfaces.md`, 34
+  acceptance tests in `tests/acceptance/test_daemon_acceptance.py`, plan committed at
+  **`3df64e0`**. `main` untouched.
+- 02:40 — **job `54f33781` started** (config + daemon + relay CLI + entry points +
+  README + unit tests), verify `python3 -m pytest -q`, max 45 min. Usage checked
+  immediately before start: 20.5153% >= 20.4%.
+- 02:52 — **job done**: 7 commits, ~11.9 min, verify **186 passed** on attempt 2,
+  audit passed, plan 9/9. Cost **0.78 weekly / 2.72 5h** points.
+- Gate: job-branch diff against `3df64e0` for `tests/acceptance` was **empty**. Review
+  found one out-of-scope change (`clipsync/clipboard.py` reordered MIME preference to
+  satisfy a bad orchestrator fixture) — reverted. My acceptance fixture wrongly
+  advertised both text and image; corrected to text-only. Then 34 acceptance passed
+  4x and the full suite **186 passed**.
+- Cleanup: worktree + job branch removed (no force). Quota after cleanup **19.739%
+  weekly / 97.28% 5h** — below the 20.4% run floor, so no fix job; remaining fixes
+  were done by me and logged in `DECISIONS.md`.
+- Merged `integration/daemon` into `main` with `--no-ff` (explicitly requested this
+  run), then re-ran acceptance + full suite on `main`.
