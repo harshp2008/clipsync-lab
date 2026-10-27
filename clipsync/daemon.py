@@ -6,10 +6,13 @@ Connects a clipboard backend to a transport relay and runs the sync loop.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import dataclasses
 import json
 import logging
+import math
 from pathlib import Path
+import random
 import signal
 import sys
 import threading
@@ -24,14 +27,94 @@ from .relay_transport import RelayTransport
 from .transport import Transport, TransportError
 
 __all__ = [
+    "BackoffPolicy",
     "ClipboardDaemon",
     "build_clipboard",
     "build_codec",
     "build_transport",
     "main",
+    "wait_or_stop",
 ]
 
 logger = logging.getLogger("clipsync.daemon")
+
+
+@dataclass(frozen=True, slots=True)
+class BackoffPolicy:
+    """Capped exponential backoff with configurable jitter."""
+
+    base: float = 0.2
+    max_delay: float = 30.0
+    jitter: float = 0.5
+
+    def __post_init__(self) -> None:
+        if isinstance(self.base, bool) or not isinstance(self.base, (int, float)):
+            raise ValueError(f"base must be a number, got {self.base!r}")
+        if math.isnan(self.base) or math.isinf(self.base) or self.base <= 0:
+            raise ValueError(f"base must be a positive finite number, got {self.base!r}")
+
+        if isinstance(self.max_delay, bool) or not isinstance(self.max_delay, (int, float)):
+            raise ValueError(f"max_delay must be a number, got {self.max_delay!r}")
+        if math.isnan(self.max_delay) or math.isinf(self.max_delay) or self.max_delay < self.base:
+            raise ValueError(
+                f"max_delay must be >= base and finite, got max_delay={self.max_delay!r}, base={self.base!r}"
+            )
+
+        if isinstance(self.jitter, bool) or not isinstance(self.jitter, (int, float)):
+            raise ValueError(f"jitter must be a number, got {self.jitter!r}")
+        if math.isnan(self.jitter) or math.isinf(self.jitter) or not (0.0 <= self.jitter <= 1.0):
+            raise ValueError(f"jitter must be between 0.0 and 1.0, got {self.jitter!r}")
+
+    def delay(self, attempt: int, *, rand: Callable[[], float] = random.random) -> float:
+        """Compute delay for a given attempt index (0-based)."""
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 0:
+            raise ValueError(f"attempt must be a non-negative int, got {attempt!r}")
+
+        if attempt >= 64:
+            raw = float(self.max_delay)
+        else:
+            raw = min(float(self.max_delay), float(self.base) * (2.0 ** attempt))
+
+        r = min(1.0, max(0.0, float(rand())))
+        factor = 1.0 - self.jitter + 2.0 * self.jitter * r
+        return min(float(self.max_delay), raw * factor)
+
+
+def wait_or_stop(
+    stop_event: threading.Event | None,
+    delay: float,
+    sleep: Callable[[float], None] = time.sleep,
+    *,
+    slice_seconds: float = 0.05,
+) -> bool:
+    """Sleep for delay seconds or until stop_event is set.
+
+    Returns True if stopped, False if full delay elapsed.
+    """
+    if delay < 0:
+        delay = 0.0
+
+    if stop_event is None:
+        sleep(delay)
+        return False
+
+    if stop_event.is_set():
+        return True
+
+    if slice_seconds <= 0:
+        slice_seconds = 0.05
+
+    remaining = delay
+    while remaining > 1e-9:
+        if stop_event.is_set():
+            return True
+        step = min(remaining, slice_seconds)
+        sleep(step)
+        remaining -= step
+        if stop_event.is_set():
+            return True
+
+    return False
 
 
 class ClipboardDaemon:
