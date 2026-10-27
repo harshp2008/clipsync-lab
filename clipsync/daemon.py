@@ -127,11 +127,20 @@ class ClipboardDaemon:
         clipboard: ClipboardBackend,
         transport: Transport,
         codec: Codec | None = None,
+        backoff: BackoffPolicy | None = None,
     ) -> None:
         self._config = config
         self._clipboard = clipboard
         self._transport = transport
         self._codec = codec
+        if backoff is None:
+            self.backoff = BackoffPolicy(
+                base=config.reconnect_delay,
+                max_delay=30.0,
+                jitter=0.5,
+            )
+        else:
+            self.backoff = backoff
         self._engine = SyncEngine(
             device_id=config.device_id,
             clipboard=clipboard,
@@ -142,6 +151,45 @@ class ClipboardDaemon:
     def connect(self) -> None:
         """Connect the underlying transport to the relay."""
         self._transport.connect()
+
+    def connect_resilient(
+        self,
+        *,
+        stop_event: threading.Event | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        max_attempts: int | None = None,
+    ) -> bool:
+        """Connect transport with capped exponential backoff and jitter.
+
+        Returns True on success, False if stopped or max_attempts reached.
+        Never raises TransportError.
+        """
+        if isinstance(max_attempts, bool):
+            raise ValueError("max_attempts must be an integer, not a bool")
+        if max_attempts is not None:
+            if not isinstance(max_attempts, int) or max_attempts < 0:
+                raise ValueError(
+                    f"max_attempts must be a non-negative integer or None, got {max_attempts!r}"
+                )
+            if max_attempts == 0:
+                return False
+
+        attempts = 0
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                return False
+
+            try:
+                self._transport.connect()
+                return True
+            except TransportError as exc:
+                logger.warning("Relay connection failed: %s", exc)
+                attempts += 1
+                if max_attempts is not None and attempts >= max_attempts:
+                    return False
+                delay = self.backoff.delay(attempts - 1)
+                if wait_or_stop(stop_event, delay, sleep=sleep):
+                    return False
 
     def poll_once(self) -> SyncStats:
         """Execute a single sync iteration and return stats."""
@@ -177,15 +225,53 @@ class ClipboardDaemon:
                 raise ValueError(
                     f"max_iterations must be a non-negative integer or None, got {max_iterations!r}"
                 )
+            if max_iterations == 0:
+                return 0
 
         count = 0
+        consecutive_failures = 0
+
         while True:
             if stop_event is not None and stop_event.is_set():
                 break
             if max_iterations is not None and count >= max_iterations:
                 break
 
-            self.poll_once()
+            if not self._transport.connected:
+                try:
+                    self._transport.connect()
+                except TransportError as exc:
+                    logger.warning("Transport connect failed: %s", exc)
+                    delay = self.backoff.delay(consecutive_failures)
+                    consecutive_failures += 1
+                    count += 1
+                    if wait_or_stop(stop_event, delay, sleep=sleep):
+                        break
+                    continue
+                else:
+                    consecutive_failures = 0
+
+            try:
+                self.poll_once()
+            except TransportError as exc:
+                logger.warning("Transport error during poll: %s", exc)
+                delay = self.backoff.delay(consecutive_failures)
+                consecutive_failures += 1
+                count += 1
+                if wait_or_stop(stop_event, delay, sleep=sleep):
+                    break
+                continue
+
+            if not self._transport.connected:
+                logger.warning("Transport disconnected after poll")
+                delay = self.backoff.delay(consecutive_failures)
+                consecutive_failures += 1
+                count += 1
+                if wait_or_stop(stop_event, delay, sleep=sleep):
+                    break
+                continue
+
+            consecutive_failures = 0
             count += 1
 
             if stop_event is not None and stop_event.is_set():
@@ -193,7 +279,8 @@ class ClipboardDaemon:
             if max_iterations is not None and count >= max_iterations:
                 break
 
-            sleep(self._config.poll_interval)
+            if wait_or_stop(stop_event, self._config.poll_interval, sleep=sleep):
+                break
 
         return count
 
@@ -226,6 +313,8 @@ def build_transport(config: DaemonConfig) -> Transport:
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    import clipsync
+
     parser = argparse.ArgumentParser(
         prog="clipsync",
         description="Two-way clipboard synchronization daemon.",
@@ -251,7 +340,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--version",
         action="version",
-        version="clipsync 0.1.0",
+        version=f"%(prog)s {clipsync.__version__}",
     )
     return parser.parse_args(argv)
 
@@ -262,6 +351,7 @@ def main(
     clipboard_factory: Callable[[DaemonConfig], ClipboardBackend] | None = None,
     transport_factory: Callable[[DaemonConfig], Transport] | None = None,
     codec_factory: Callable[[DaemonConfig], Codec | None] | None = None,
+    stop_event: threading.Event | None = None,
 ) -> int:
     """CLI entry point for the clipsync daemon.
 
@@ -301,14 +391,14 @@ def main(
         codec=codec,
     )
 
-    try:
-        daemon.connect()
-    except TransportError as exc:
-        sys.stderr.write(f"Transport connection error: {exc}\n")
-        daemon.close()
-        return 1
-
     if args.once:
+        try:
+            daemon.connect()
+        except TransportError as exc:
+            sys.stderr.write(f"Transport connection error: {exc}\n")
+            daemon.close()
+            return 1
+
         try:
             stats = daemon.poll_once()
             stats_json = json.dumps(dataclasses.asdict(stats), separators=(",", ":"))
@@ -318,19 +408,23 @@ def main(
             daemon.close()
         return 0
 
-    stop_event = threading.Event()
+    if stop_event is None:
+        local_stop = threading.Event()
 
-    def _sig_handler(_signum: int, _frame: Any) -> None:
-        stop_event.set()
+        def _sig_handler(_signum: int, _frame: Any) -> None:
+            local_stop.set()
+
+        try:
+            signal.signal(signal.SIGINT, _sig_handler)
+            signal.signal(signal.SIGTERM, _sig_handler)
+        except (ValueError, AttributeError):
+            pass
+        run_stop = local_stop
+    else:
+        run_stop = stop_event
 
     try:
-        signal.signal(signal.SIGINT, _sig_handler)
-        signal.signal(signal.SIGTERM, _sig_handler)
-    except (ValueError, AttributeError):
-        pass
-
-    try:
-        daemon.run(stop_event=stop_event)
+        daemon.run(stop_event=run_stop)
     except KeyboardInterrupt:
         pass
     finally:
