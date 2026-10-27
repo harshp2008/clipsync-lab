@@ -473,7 +473,8 @@ handover and no fix job were needed. `agy_usage` was read immediately before the
 ```bash
 git diff 99ef7bb -- tests/acceptance          # 0 lines
 git diff 99ef7bb -- docs/design/interfaces.md # 0 lines
-git diff 613b54b..  # job only touched the 7 intended files
+git diff --name-status 99ef7bb agy/resilience-clipsync-peer-implementation-8d7766f2
+                                              # only the 7 intended files
 python3 -m pytest -q tests/acceptance          # 66 passed (3 consecutive runs)
 python3 -m pytest -q                           # 230 passed
 git diff 99ef7bb HEAD -- tests/acceptance      # 0 lines
