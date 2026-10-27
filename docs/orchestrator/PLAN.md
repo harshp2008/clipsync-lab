@@ -309,3 +309,22 @@ clipboard.
 
 - 10:50 — run start; `agy_usage` weekly **19.7393%** / 5h **100%**; floor 12% weekly.
   `integration/resilience` cut from `main` (`73b58b3`).
+- 10:52 — contract section appended to `docs/design/interfaces.md` and **32 new
+  acceptance tests** (18 resilience + 14 peer) committed at **`99ef7bb`**; `main`
+  untouched, `tests/acceptance` frozen from here on.
+- 10:52 — **job `d5c77c7b-4c60-4e4d-bbbd-f2b5b9845722` started** (daemon resilience +
+  `clipsync-peer` + version source + README + unit tests), verify
+  `python3 -m pytest -q`, max 45 min. `agy_usage` immediately before the start:
+  weekly **19.7393%** >= 12% floor.
+- 11:03 — **job done**: 6 commits, ~11.2 min, verify **230 passed on attempt 1**,
+  audit passed, plan 8/8, no denials. Measured cost 0.73 weekly / 2.55 5h points.
+- 11:05 — **gate passed**: `git diff 99ef7bb -- tests/acceptance` empty; job changed
+  only `clipsync/daemon.py`, `clipsync/peer.py`, `clipsync/relay_cli.py`,
+  `pyproject.toml`, `README.md`, `tests/test_resilience.py`, `tests/test_peer.py`;
+  merged with `--no-ff` into `integration/resilience`. Acceptance **66 passed** three
+  consecutive times; full suite **230 passed**. Frozen tests byte-identical to
+  `99ef7bb`. `agy_cleanup` removed worktree + branch (no force). Quota after cleanup:
+  weekly **19.01%** / 5h **97.45%** (above the 12% floor; no fix job needed).
+- 11:10 — docs updated (`README`, `DECISIONS`, `NEEDS_HUMAN`, this log, `REPORT`).
+  **`main` is untouched; merging `integration/resilience` into `main` is left to the
+  human** (see NEEDS_HUMAN H11).

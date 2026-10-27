@@ -194,3 +194,46 @@ documented. `integration/daemon` was merged into `main` (`--no-ff`) because the 
 request said "on main, add"; `main` was then re-verified (`34` acceptance / `186`
 full). No push, no force, no system changes. Worktree + job branch cleaned up with
 `force` false.
+
+## D24 — Resilience + peer run: GATED with two frozen suites (10:52 IST)
+The request is test-checkable (daemon resilience + a new console command), so this run
+used GATED again: the contract section and 32 acceptance tests (18 resilience, 14 peer)
+were committed at `99ef7bb` before the single implementation job. Branch
+`integration/resilience` was cut from `main` at `73b58b3`; `main` is never committed to
+or merged into this run (the human asked to leave the merge). Run-specific floor from
+the request: **do not start a job below 12% weekly** — checked immediately before the
+start at 19.7393%, so the one job was allowed. Job
+`d5c77c7b-4c60-4e4d-bbbd-f2b5b9845722`.
+
+## D25 — Job accepted unchanged at the gate (11:05 IST)
+The job (6 commits, ~11.2 min, audit passed) passed the wrapper verify with 230 tests
+on attempt 1. Gate facts: `git diff 99ef7bb -- tests/acceptance` = **0 lines**; the
+job touched only the seven intended files and nothing in `clipsync/clipboard.py`,
+`protocol.py`, `engine.py`, `transport.py`, `relay_server.py`, `relay_transport.py`,
+`config.py` or `crypto.py`. I read the whole diff before merging and found no
+out-of-scope behaviour change, no clipboard access in the peer, and no secret logging.
+Kept as-is; no fix job was needed and none was started. Cost 0.73 weekly / 2.55 5h
+points (quota after cleanup 19.01% weekly / 97.45% 5h).
+
+## D26 — How resilience is defined (and why `--once` is unchanged) (11:05 IST)
+`BackoffPolicy.delay` is `min(max_delay, base * 2**attempt)` scaled by
+`1 - jitter + 2*jitter*r`; waits go through `wait_or_stop`, which slices at 0.05 s when
+a `stop_event` is supplied, so SIGINT/SIGTERM (and tests) interrupt even a 30 s
+backoff promptly while the injected `sleep` is still called exactly once per wait when
+there is no event. `ClipboardDaemon.run` counts failed connect/poll iterations as
+iterations, logs one WARNING per failure through `clipsync.daemon`, and reconnects on
+the next iteration; a healthy iteration is unchanged (one poll, one
+`sleep(poll_interval)`), which is why the existing exact-sleep tests still pass.
+Continuous `main` no longer exits when the relay is down at startup; it retries until
+stopped and returns 0. `--once` intentionally keeps the old fail-fast contract
+(`Transport connection error: ...`, rc 1) because it is a one-shot connectivity check,
+already covered by the previous acceptance suite. The peer reuses the daemon's
+config/transport/codec/backoff so there is one config and one protocol/codec
+implementation, and it never imports or touches the clipboard.
+
+## D27 — Final state and the merge left to the human (11:10 IST)
+`integration/resilience` is green: **66/66 acceptance** (three consecutive runs) and
+**230/230 full suite**; the frozen acceptance files are byte-identical to `99ef7bb`.
+`main` remains at `73b58b3`. Job worktree and branch were removed with
+`agy_cleanup` (no force). Per the request, the merge of `integration/resilience` into
+`main` is **not** performed; the command is in `REPORT.md` and NEEDS_HUMAN H11.
