@@ -95,6 +95,44 @@ Or run the continuous laptop daemon:
 clipsync --config ~/.config/clipsync/config.toml
 ```
 
+## Two-terminal smoke test
+
+With `clipsync-relay` already running in the background, you can verify sync between the daemon and `clipsync-peer` across two terminals.
+
+> **Warning:** This smoke test uses the real clipboard via the daemon. Run it only with non-sensitive content, or not at all if the machine is currently in use for secrets.
+
+### Terminal A (Daemon)
+
+Run the continuous daemon on the laptop:
+
+```bash
+clipsync --config ~/.config/clipsync/config.toml
+```
+
+### Terminal B (Peer)
+
+The peer acts as a second device on the relay. When sharing the same configuration file, specify a distinct `--device-id` so payloads are not dropped as self-echoes.
+
+1. Listen for payloads sent from the daemon and save received images:
+
+```bash
+clipsync-peer --config ~/.config/clipsync/config.toml --device-id phone-test listen --output-dir ./received
+```
+
+Received images land in the output directory `./received`.
+
+2. Send text to the daemon's clipboard:
+
+```bash
+clipsync-peer --config ~/.config/clipsync/config.toml --device-id phone-test send-text "hello from the peer"
+```
+
+3. Send an image to the daemon's clipboard:
+
+```bash
+clipsync-peer --config ~/.config/clipsync/config.toml --device-id phone-test send-image ./screenshot.png
+```
+
 ## Run the tests
 
 No phone, network or real clipboard needed. Uses the system Python (no installs):
