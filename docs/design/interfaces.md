@@ -502,3 +502,217 @@ clipsync-relay = "clipsync.relay_cli:main"
 config + secret files, run `clipsync --config ...`, and a one-shot
 `clipsync --config ... --once`. It must state that `clipsync` is the laptop daemon,
 `clipsync-relay` is loopback-only, and both token and E2E key stay out of git.
+
+## resilience + peer run — backoff, resilient daemon, `clipsync-peer` (2026-10-27)
+
+Additive contract for the daemon-resilience + peer-tool run. Everything above stays
+valid. Tests that freeze this contract live in
+`tests/acceptance/test_resilience_acceptance.py` and
+`tests/acceptance/test_peer_acceptance.py`; they are written before the implementation
+and must not be edited during it.
+
+### Version source
+
+`clipsync.__version__` is the **single** source of truth for every CLI version string.
+
+- `clipsync --version`, `clipsync-relay --version` and `clipsync-peer --version` print
+  exactly `"<prog> <clipsync.__version__>"` (prog = `clipsync`, `clipsync-relay`,
+  `clipsync-peer`) followed by a newline, then exit 0.
+- Resolve the value through the package so that patching `clipsync.__version__` *before*
+  importing the entry module (e.g. `import clipsync; clipsync.__version__ = "9.9.9";
+  import clipsync.daemon`) is honoured. Do not hardcode `"0.1.0"` in the CLIs and do not
+  read it from `importlib.metadata`. `pyproject.toml` may keep its own version.
+
+### `clipsync.daemon` — `BackoffPolicy`
+
+```python
+@dataclass(frozen=True, slots=True)
+class BackoffPolicy:
+    base: float = 0.2
+    max_delay: float = 30.0
+    jitter: float = 0.5
+
+    def delay(self, attempt: int, *, rand: Callable[[], float] = random.random) -> float
+```
+
+- `__post_init__` raises `ValueError` unless `base` is a positive finite number,
+  `max_delay >= base` and `0.0 <= jitter <= 1.0` (bools are not numbers here).
+- `delay`: `attempt` must be an `int >= 0` (bool rejected) else `ValueError`;
+  `raw = min(max_delay, base * 2 ** attempt)`; `r = min(1.0, max(0.0, float(rand())))`;
+  `factor = 1.0 - jitter + 2.0 * jitter * r`; return `min(max_delay, raw * factor)`.
+- Defaults above. With `jitter=0.0` and `rand` irrelevant,
+  `delay(i) == min(max_delay, base * 2 ** i)` exactly.
+- Exported from `clipsync.daemon` (`__all__`).
+
+### `clipsync.daemon` — `wait_or_stop`
+
+```python
+def wait_or_stop(
+    stop_event: threading.Event | None,
+    delay: float,
+    sleep: Callable[[float], None] = time.sleep,
+    *,
+    slice_seconds: float = 0.05,
+) -> bool
+```
+
+- `stop_event is None`: call `sleep(delay)` exactly once and return `False`.
+- Otherwise sleep in slices of at most `slice_seconds`, checking `stop_event` before
+  each slice; return `True` if the event is (or becomes) set, `False` if the whole
+  delay elapsed. A pre-set event returns `True` without sleeping.
+- Treat negative `delay` as 0.
+
+### `clipsync.daemon` — `ClipboardDaemon` changes
+
+```python
+class ClipboardDaemon:
+    def __init__(self, config, *, clipboard, transport, codec=None,
+                 backoff: BackoffPolicy | None = None) -> None
+    # public attribute: self.backoff
+    # backoff=None -> BackoffPolicy(base=config.reconnect_delay, max_delay=30.0, jitter=0.5)
+
+    def connect(self) -> None                      # unchanged (raises TransportError)
+    def connect_resilient(self, *, stop_event: threading.Event | None = None,
+                          sleep: Callable[[float], None] = time.sleep,
+                          max_attempts: int | None = None) -> bool
+    def run(self, *, stop_event=None, max_iterations=None,
+            sleep: Callable[[float], None] = time.sleep) -> int   # unchanged signature
+```
+
+`connect_resilient`:
+- `max_attempts` must be `None` or an `int >= 0` (bool rejected) else `ValueError`
+  (`0` means no attempt).
+- Loop: if `stop_event` is set return `False` (without connecting); call
+  `self._transport.connect()`; on `TransportError` log one **WARNING** through the
+  `clipsync.daemon` logger, increment the attempt counter, and return `False` when
+  `max_attempts` is reached, else `wait_or_stop(stop_event,
+  self.backoff.delay(attempt - 1), sleep)` and continue. On success return `True`.
+- Must never propagate `TransportError`.
+
+`run` (resilient loop, existing healthy-path behaviour preserved):
+- Validation of `max_iterations` is unchanged (`ValueError` for negatives and bools),
+  and `max_iterations=0` polls zero times.
+- Each loop iteration does at most one work attempt and at most one wait, and counts as
+  one iteration. A healthy iteration polls once and (unless stopping or the bound is
+  reached) calls `sleep(config.poll_interval)` exactly once — the existing sleep list
+  tests must keep passing unchanged.
+- If `transport.connected` is falsy at the top of an iteration, attempt
+  `transport.connect()` in that iteration: on `TransportError` log one WARNING, wait
+  `self.backoff.delay(consecutive_failures)` (via `wait_or_stop`) and continue with the
+  next iteration; on success reset the failure counter and poll in the same iteration.
+- `TransportError` escaping `poll_once()` is caught the same way (defensive; the engine
+  normally swallows transport errors). After a poll, if `transport.connected` became
+  falsy, log one WARNING, wait `self.backoff.delay(consecutive_failures)` and continue;
+  the reconnect happens at the top of the next iteration. Any other exception
+  propagates.
+- The failure counter starts at 0 for the first failure, resets on a successful poll.
+- Waits use `wait_or_stop(stop_event, delay, sleep)` so SIGINT/SIGTERM (or a test's
+  `stop_event`) interrupt even a long backoff wait promptly. With `stop_event=None`,
+  the injected `sleep` is called once per wait (exact-sleep tests stay valid).
+- Never raise `TransportError`; return the iteration count when stopped/bounded.
+
+`clipsync.daemon.main` gains:
+
+```python
+def main(argv=None, *, clipboard_factory=None, transport_factory=None,
+         codec_factory=None, stop_event: threading.Event | None = None) -> int
+```
+
+- `--once` is unchanged: connect (a `TransportError` prints `Transport connection
+  error: ...` to stderr and returns 1), poll exactly once, print the compact JSON
+  `SyncStats` line, close, return 0.
+- Without `--once`: do **not** exit on a startup `TransportError`. Create a local
+  `threading.Event` when `stop_event` is None and install SIGINT/SIGTERM handlers only
+  in that case (an injected event must not install handlers — safe off the main
+  thread). Then `daemon.run(stop_event=...)` until stopped, close in `finally`, return
+  0. Relay-down-at-startup must only produce WARNING log lines and retries.
+- The daemon's default transport is still `build_transport(config)`; a down relay must
+  never cause an exit code other than 0 in continuous mode.
+
+### `clipsync/peer.py` — `clipsync-peer`
+
+New module, console script `clipsync-peer = "clipsync.peer:main"`. It reuses the exact
+same config loading, relay transport, protocol/codec and backoff as the daemon
+(`load_config`, `clipsync.daemon.build_transport`, `build_codec`, `BackoffPolicy`,
+`wait_or_stop`) and **never touches the clipboard**.
+
+```python
+class PeerError(Exception): ...
+
+IMAGE_MIME_BY_SUFFIX: dict[str, str] = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif",
+}
+
+def image_payload_from_file(path: str | Path) -> ClipPayload
+def send_payload(transport, codec, device_id: str, payload: ClipPayload,
+                 *, seq: int | None = None) -> ClipMessage
+def listen(transport, codec, *, device_id: str, output_dir: str | Path,
+           stop_event: threading.Event | None = None,
+           sleep: Callable[[float], None] = time.sleep,
+           poll_interval: float = 0.05,
+           backoff: BackoffPolicy | None = None,
+           out: TextIO | None = None) -> int
+def main(argv=None, *, transport_factory=None, codec_factory=None,
+         stop_event: threading.Event | None = None) -> int
+```
+
+- `image_payload_from_file`: expanduser the path, pick the MIME from the lower-cased
+  suffix, read the bytes and return `image_payload(data, mime)`. Raise `PeerError`
+  (never `PayloadTooLarge`/`OSError`) for a missing/unreadable file, an unsupported
+  suffix, or empty / over-limit content; messages must not contain file contents.
+- `send_payload`: `seq` defaults to `int(time.time() * 1000)`; build
+  `ClipMessage(origin=device_id, seq=seq, payload=payload)`, `encode_frame`, then
+  `codec.encrypt` when a codec is given, then `transport.send(frame)`; return the
+  message. `TransportError` propagates.
+- `listen`: create `output_dir` (`expanduser().resolve()`, `mkdir(parents=True,
+  exist_ok=True)`) first. Loop until `stop_event` is set: if `transport.connected` is
+  falsy, try `connect()` with capped exponential backoff + jitter (default
+  `BackoffPolicy()`, waits via `wait_or_stop`), logging WARNING and retrying instead of
+  exiting; `TransportError` from `recv()` is also logged as WARNING, waited out and
+  retried. For each frame: decrypt with the codec when present (`CryptoError` ->
+  WARNING, skip), `decode_frame` (`ValidationError` -> WARNING, skip), skip frames whose
+  `origin == device_id`, then print exactly one JSON line to `out` (default
+  `sys.stdout`, flushed) and count it. Sleep `poll_interval` between iterations when
+  `stop_event` is None, else via `wait_or_stop` so stopping is prompt. Return the number
+  of printed payloads.
+  - text line: `{"kind": "text", "mime": <mime>, "origin": <origin>, "seq": <seq>,
+    "text": <text>}`
+  - image line: `{"kind": "image", "mime": <mime>, "origin": <origin>, "seq": <seq>,
+    "path": <absolute path str>, "bytes": <len(data)>}`; the image bytes are written
+    verbatim to `<output_dir>/<msg_id>.<ext>` with ext `png`/`jpg`/`webp`/`gif`.
+  - Lines are `json.dumps(obj, sort_keys=True, separators=(",", ":"),
+    ensure_ascii=False) + "\n"`.
+- `main` CLI: global `--config PATH` (default `~/.config/clipsync/config.toml`),
+  `--device-id ID` (optional override of `config.device_id`; after strip 1..128 chars
+  else exit 2), `--log-level {DEBUG,INFO,WARNING,ERROR}`, `--version`; subcommands
+  `send-text TEXT`, `send-image FILE`, `listen [--output-dir DIR]` (default
+  `clipsync-images`).
+  - `send-text`/`send-image`: validate the payload first (empty text, bad file -> stderr
+    + return 2, no network attempt), then connect; a `TransportError` on connect or send
+    prints an error to stderr and returns 1. Success prints nothing and returns 0.
+  - `listen`: builds the transport, installs SIGINT/SIGTERM handlers only when
+    `stop_event` is None, calls `listen(...)` with `backoff=BackoffPolicy(
+    base=config.reconnect_delay, max_delay=30.0, jitter=0.5)`, closes the transport in
+    `finally`, returns 0 when stopped. Relay down at startup must not exit: it retries
+    until stopped.
+  - Config errors (`ConfigError`) and argparse errors: stderr + return 2. Use the same
+    `logging.basicConfig` format as the other CLIs. Never log payload text/bytes, the
+    token or the key.
+  - `python3 -m clipsync.peer` works (`if __name__ == "__main__"`).
+
+### Packaging and README
+
+`pyproject.toml` `[project.scripts]` gains
+`clipsync-peer = "clipsync.peer:main"` and keeps the two existing entries.
+
+`README.md` gains a `## Two-terminal smoke test` section (after Quickstart) covering,
+in two terminals with the relay already running: terminal A runs
+`clipsync --config ~/.config/clipsync/config.toml`; terminal B runs
+`clipsync-peer --config ... listen --output-dir ./received`, then
+`clipsync-peer --config ... send-text "hello from the peer"` and
+`clipsync-peer --config ... send-image ./screenshot.png`. It must say the peer is a
+second device (distinct `--device-id` from the daemon when using the same config file),
+that received images land in the output directory, and that the smoke test uses the
+real clipboard via the daemon — so run it only with non-sensitive content or not at all
+if the machine is in use for secrets.
