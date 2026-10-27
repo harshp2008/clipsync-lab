@@ -255,3 +255,76 @@ Safety: every test uses `FakeClipboard`, `InMemoryTransport`, a loopback
   were done by me and logged in `DECISIONS.md`.
 - Merged `integration/daemon` into `main` with `--no-ff` (explicitly requested this
   run), then re-ran acceptance + full suite on `main`.
+
+---
+
+# Resilience + peer run — 2026-10-27 10:50 IST (deadline 14:00)
+
+**Workflow: GATED.** The deliverable is test-checkable end to end (daemon resilience
+and a new console command), so the contract section and the acceptance tests are
+written and committed first; one implementation job then has to make them pass without
+touching `tests/acceptance/`. Gate = byte-identical acceptance diff, `agy_review` +
+reading the diff, merge into `integration/resilience`, then acceptance + full suite run
+by me.
+
+- **Base commit: `73b58b3`** (`main`, "merge daemon: laptop clipsync daemon, relay command,
+  config and tests"). Branch `integration/resilience` cut from it. **`main` is never
+  touched or merged into** this run; the merge is left to the human.
+- Quota before the run: Gemini weekly **19.7393%**, 5h **100%**. Run-specific rule from
+  the request: **do not start an agy job when weekly remaining is below 12%**; re-check
+  with `agy_usage` immediately before the start. At most one implementation job (+ at
+  most one fix job only if the floor allows and the gate fails).
+- Deadline: stop by **14:00 IST**.
+
+## Deliverables
+
+| Chunk | Owner | Notes |
+|---|---|---|
+| Contract section (`docs/design/interfaces.md` § "resilience + peer run") | me | committed before the job |
+| `tests/acceptance/test_resilience_acceptance.py` | me | frozen during the job |
+| `tests/acceptance/test_peer_acceptance.py` | me | frozen during the job |
+| `clipsync/daemon.py`: `BackoffPolicy`, `wait_or_stop`, resilient `run`, resilient CLI startup, `stop_event` injection | agy job 1 | GATED |
+| `clipsync/peer.py`: `clipsync-peer` command (`send-text`, `send-image`, `listen`) | agy job 1 | GATED |
+| `clipsync/__init__.py` version as the single `--version` source for all three CLIs | agy job 1 | GATED |
+| `pyproject.toml` `clipsync-peer` script + README two-terminal smoke test | agy job 1 | GATED |
+| Unit tests for backoff/peer | agy job 1 | travels with the implementation |
+| Gate: diff check, review, merge, acceptance + full suite | me | |
+| `README`/`PLAN`/`DECISIONS`/`REPORT`/`NEEDS_HUMAN` final updates, final verification | me | |
+
+## Gate commands
+
+```bash
+git diff 73b58b3 -- tests/acceptance          # must be empty
+python3 -m pytest -q tests/acceptance          # must pass
+python3 -m pytest -q                           # full suite must pass
+```
+
+Safety: every test uses `FakeClipboard` / in-memory or loopback transports and a
+loopback `RelayServer` on an ephemeral port. No test may spawn `wl-paste`/`wl-copy`,
+read or write the real clipboard, or use external network. The one subprocess test runs
+`python3 -m clipsync.daemon` against a closed loopback port, so it never polls the
+clipboard.
+
+## Status log
+
+- 10:50 — run start; `agy_usage` weekly **19.7393%** / 5h **100%**; floor 12% weekly.
+  `integration/resilience` cut from `main` (`73b58b3`).
+- 10:52 — contract section appended to `docs/design/interfaces.md` and **32 new
+  acceptance tests** (18 resilience + 14 peer) committed at **`99ef7bb`**; `main`
+  untouched, `tests/acceptance` frozen from here on.
+- 10:52 — **job `d5c77c7b-4c60-4e4d-bbbd-f2b5b9845722` started** (daemon resilience +
+  `clipsync-peer` + version source + README + unit tests), verify
+  `python3 -m pytest -q`, max 45 min. `agy_usage` immediately before the start:
+  weekly **19.7393%** >= 12% floor.
+- 11:03 — **job done**: 6 commits, ~11.2 min, verify **230 passed on attempt 1**,
+  audit passed, plan 8/8, no denials. Measured cost 0.73 weekly / 2.55 5h points.
+- 11:05 — **gate passed**: `git diff 99ef7bb -- tests/acceptance` empty; job changed
+  only `clipsync/daemon.py`, `clipsync/peer.py`, `clipsync/relay_cli.py`,
+  `pyproject.toml`, `README.md`, `tests/test_resilience.py`, `tests/test_peer.py`;
+  merged with `--no-ff` into `integration/resilience`. Acceptance **66 passed** three
+  consecutive times; full suite **230 passed**. Frozen tests byte-identical to
+  `99ef7bb`. `agy_cleanup` removed worktree + branch (no force). Quota after cleanup:
+  weekly **19.01%** / 5h **97.45%** (above the 12% floor; no fix job needed).
+- 11:10 — docs updated (`README`, `DECISIONS`, `NEEDS_HUMAN`, this log, `REPORT`).
+  **`main` is untouched; merging `integration/resilience` into `main` is left to the
+  human** (see NEEDS_HUMAN H11).

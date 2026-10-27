@@ -3,9 +3,9 @@
 Investigation + prototype for reliable **two-way clipboard sync (text and images)**
 between an Ubuntu GNOME **Wayland** laptop and an **Android** phone.
 
-Status: research complete; laptop-side app complete (daemon, relay command, config,
-tests). The phone-side steps are documented but **untested** (no phone access in this
-run); anything needing an account, the phone, or system changes is in
+Status: research complete; laptop-side app complete (resilient daemon, relay command,
+config, peer tool, tests). The phone-side steps are documented but **untested** (no
+phone access in this run); anything needing an account, the phone, or system changes is in
 [`docs/orchestrator/NEEDS_HUMAN.md`](docs/orchestrator/NEEDS_HUMAN.md).
 
 ## What is here
@@ -24,21 +24,24 @@ run); anything needing an account, the phone, or system changes is in
 | `clipsync/config.py` | TOML config loader for the daemon; token/E2E key may come from files. |
 | `clipsync/daemon.py` | `ClipboardDaemon` loop and the `clipsync` console command. |
 | `clipsync/relay_cli.py` | `clipsync-relay` console command. |
+| `clipsync/peer.py` | `clipsync-peer` console command: second device on the relay (`send-text`, `send-image`, `listen`). |
 | [`docs/android-side.md`](docs/android-side.md) | Exact phone steps (UNTESTED). |
 | [`docs/orchestrator/`](docs/orchestrator/) | Plan, decisions, needs-human, final report. |
 
 ## Quickstart
 
-`clipsync` is the laptop daemon that wires a clipboard backend to the relay, while
-`clipsync-relay` is the loopback-only relay server. From the repo root, install the
-console commands once (the runtime dependency is already in `pyproject.toml`):
+`clipsync` is the laptop daemon that wires a clipboard backend to the relay,
+`clipsync-relay` is the loopback-only relay server, and `clipsync-peer` is a second
+device on the relay (send text/images, or listen and save received images). From the
+repo root, install the console commands once (the runtime dependency is already in
+`pyproject.toml`):
 
 ```bash
 python3 -m pip install --user -e .
 ```
 
-Without installing, the same commands work as `python3 -m clipsync.daemon ...` and
-`python3 -m clipsync.relay_cli ...`.
+Without installing, the same commands work as `python3 -m clipsync.daemon ...`,
+`python3 -m clipsync.relay_cli ...` and `python3 -m clipsync.peer ...`.
 
 > **Security:** the shared bearer token and the optional E2E key must stay out of git.
 > Keep them in `~/.config/clipsync/` with `chmod 600`; never commit or screenshot them.
@@ -95,6 +98,44 @@ Or run the continuous laptop daemon:
 clipsync --config ~/.config/clipsync/config.toml
 ```
 
+## Two-terminal smoke test
+
+With `clipsync-relay` already running in the background, you can verify sync between the daemon and `clipsync-peer` across two terminals.
+
+> **Warning:** This smoke test uses the real clipboard via the daemon. Run it only with non-sensitive content, or not at all if the machine is currently in use for secrets.
+
+### Terminal A (Daemon)
+
+Run the continuous daemon on the laptop:
+
+```bash
+clipsync --config ~/.config/clipsync/config.toml
+```
+
+### Terminal B (Peer)
+
+The peer acts as a second device on the relay. When sharing the same configuration file, specify a distinct `--device-id` so payloads are not dropped as self-echoes.
+
+1. Listen for payloads sent from the daemon and save received images:
+
+```bash
+clipsync-peer --config ~/.config/clipsync/config.toml --device-id phone-test listen --output-dir ./received
+```
+
+Received images land in the output directory `./received`.
+
+2. Send text to the daemon's clipboard:
+
+```bash
+clipsync-peer --config ~/.config/clipsync/config.toml --device-id phone-test send-text "hello from the peer"
+```
+
+3. Send an image to the daemon's clipboard:
+
+```bash
+clipsync-peer --config ~/.config/clipsync/config.toml --device-id phone-test send-image ./screenshot.png
+```
+
 ## Run the tests
 
 No phone, network or real clipboard needed. Uses the system Python (no installs):
@@ -105,8 +146,9 @@ python3 -m pytest -q
 
 The suite covers protocol validation/oversized payloads, clipboard command building
 with a canned runner, crypto round-trip/tamper, transport delivery/partial lines,
-engine echo-loop/dedup/ordering/reconnect, the loopback relay, and the daemon/config/
-CLI wiring. Config/CLI tests use fake clipboards and a canned `CommandRunner`.
+engine echo-loop/dedup/ordering/reconnect, the loopback relay, daemon backoff/
+reconnect resilience, the peer command, and the daemon/config/CLI wiring. Config/CLI
+tests use fake clipboards and a canned `CommandRunner`.
 
 ## Safety
 
@@ -121,4 +163,6 @@ CLI wiring. Config/CLI tests use fake clipboards and a canned `CommandRunner`.
 
 `main` carries the current line: research, prototype, relay, and the laptop daemon.
 Feature work happens on `integration/*` branches (`research`, `prototype`, `relay`,
-`relay-micro`, `daemon`); see `docs/orchestrator/REPORT.md` for history.
+`relay-micro`, `daemon`, `resilience`); see `docs/orchestrator/REPORT.md` for history.
+`integration/resilience` (daemon resilience + `clipsync-peer`) is **not merged yet**:
+the merge into `main` is left to the repo owner.

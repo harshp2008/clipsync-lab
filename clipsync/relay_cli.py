@@ -110,6 +110,8 @@ def run_relay(
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    import clipsync
+
     parser = argparse.ArgumentParser(
         prog="clipsync-relay",
         description="Loopback WebSocket relay server for clipsync.",
@@ -148,7 +150,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--version",
         action="version",
-        version="clipsync-relay 0.1.0",
+        version=f"%(prog)s {clipsync.__version__}",
     )
     return parser.parse_args(argv)
 

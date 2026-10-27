@@ -430,3 +430,123 @@ packages, change system settings, or start the daemon against the real clipboard
 - Config secrets are protected only by file permissions; the README says `chmod 600`
   and keep them out of git. There is no keyring integration.
 - The daemon's continuous loop has no metrics endpoint; it logs to stderr only.
+
+---
+
+# Resilience + peer run
+
+**Window:** 2026-10-27 10:50 → ~11:10 IST (deadline 14:00; finished early).
+**Branch:** `integration/resilience`, cut from `main` at **`73b58b3`**. `main` was
+deliberately **not** merged into or committed to; per the request the merge is left to
+the repo owner (NEEDS_HUMAN H11).
+**Workflow:** GATED — contract + 32 acceptance tests committed at **`99ef7bb`** before
+the single implementation job. **Result:** daemon resilience and `clipsync-peer` are
+implemented and green: **66/66 acceptance** (three consecutive runs), **230/230 full
+suite**, frozen acceptance diff **0 lines**, audit passed, worktree cleaned up.
+
+## Deliverables
+
+| Deliverable | Where | State |
+|---|---|---|
+| Capped exponential backoff + jitter (`BackoffPolicy`) and interruptible waits (`wait_or_stop`) | `clipsync/daemon.py` | complete |
+| Resilient daemon loop: outages and transport errors do not crash, keep polling and reconnect; startup relay-down retries until stopped | `clipsync/daemon.py` (`ClipboardDaemon.run`, `connect_resilient`, `main(stop_event=...)`) | complete |
+| `clipsync-peer` console command (`send-text`, `send-image`, `listen --output-dir`; same config/token/E2E key, protocol and codec as the daemon) | `clipsync/peer.py`, `pyproject.toml` | complete |
+| Version strings from `clipsync.__version__` in all three CLIs | `daemon.py`, `relay_cli.py`, `peer.py` | complete |
+| README two-terminal smoke test | `README.md` § "Two-terminal smoke test" | complete |
+| Frozen acceptance suites + contract | `tests/acceptance/test_{resilience,peer}_acceptance.py`, `docs/design/interfaces.md` | complete |
+| Unit tests (backoff, peer) | `tests/test_{resilience,peer}.py` | complete |
+| Orchestrator docs | `docs/orchestrator/{PLAN,DECISIONS,NEEDS_HUMAN,REPORT}.md` | complete |
+
+## Job
+
+| Job id | State | Wall | Commits | Verify | Audit | Weekly cost | 5h cost |
+|---|---|---|---|---|---|---|---|
+| `d5c77c7b-4c60-4e4d-bbbd-f2b5b9845722` | done | ~11.2 min | 6 | 230 passed (attempt 1) | passed | 0.73 | 2.55 |
+
+Quota: start **19.7393% weekly / 100% 5h**; after cleanup **19.01% / 97.45%**. The
+run-specific rule was “do not start below **12% weekly**”; it was never reached, so no
+handover and no fix job were needed. `agy_usage` was read immediately before the start;
+`agy_cleanup` ran with `force` false and removed both worktree and job branch.
+
+## Gate evidence (run by me, on `integration/resilience`)
+
+```bash
+git diff 99ef7bb -- tests/acceptance          # 0 lines
+git diff 99ef7bb -- docs/design/interfaces.md # 0 lines
+git diff --name-status 99ef7bb agy/resilience-clipsync-peer-implementation-8d7766f2
+                                              # only the 7 intended files
+python3 -m pytest -q tests/acceptance          # 66 passed (3 consecutive runs)
+python3 -m pytest -q                           # 230 passed
+git diff 99ef7bb HEAD -- tests/acceptance      # 0 lines
+```
+
+The 32 new acceptance tests (18 resilience, 14 peer) were written before the job and
+never edited by it. I read the full diff before merging; no out-of-scope changes, no
+clipboard access in the peer, no secret/payload logging. Accepted unchanged; merged
+with `--no-ff` into `integration/resilience`.
+
+## What the implementation does
+
+- `BackoffPolicy.delay` = `min(max_delay, base * 2**attempt)` scaled by
+  `1 - jitter + 2*jitter*r` (defaults 0.2 s / 30 s / 0.5) with strict validation.
+  `wait_or_stop` slices waits at 0.05 s when a `stop_event` exists, so SIGINT/SIGTERM
+  interrupt even a 30 s backoff; without an event the injected `sleep` is called once,
+  which keeps the old exact-sleep tests valid.
+- `ClipboardDaemon.run` treats a falsy `transport.connected` at the top of an
+  iteration as an outage: one WARNING through `clipsync.daemon`, wait
+  `backoff.delay(consecutive_failures)`, reconnect next iteration; a transport error
+  escaping `poll_once()` or a disconnect detected after the poll does the same; any
+  other exception still propagates. Healthy iterations are unchanged (one poll, one
+  `sleep(poll_interval)`), and failed iterations are counted as iterations.
+- Continuous `clipsync` no longer exits when the relay is down at startup: it logs
+  warnings and retries until SIGINT/SIGTERM, then returns 0. `--once` deliberately
+  keeps the old fail-fast behaviour (`Transport connection error: ...`, rc 1).
+- `clipsync-peer` reuses `load_config`, `build_transport`, `build_codec`,
+  `BackoffPolicy` and `wait_or_stop`; it never imports the clipboard. `listen` creates
+  its output directory, retries a down relay, skips its own origin and undecryptable/
+  invalid frames with warnings, prints canonical JSON lines (text fields or an image
+  `path`/`bytes`), and writes images verbatim to `<output-dir>/<msg_id>.<ext>`.
+- `clipsync --version`, `clipsync-relay --version` and `clipsync-peer --version` all
+  resolve `clipsync.__version__` at call time (no hardcoded duplicate).
+
+## Safety
+
+- No test or command in this run read or wrote the real clipboard. The peer does not
+  import `clipboard` at all; daemon tests use `FakeClipboard`/in-memory fakes; the
+  subprocess SIGTERM test runs against a closed loopback port so the daemon never
+  polls a clipboard; every relay is loopback-only on an ephemeral port.
+- No packages installed, no external network, no system changes, no secrets created,
+  no push/force, and `main` was not touched.
+
+## Verification commands (human)
+
+```bash
+cd "/home/harsh/Documents/GITHUB PROJECTS/clipsync-lab"
+git checkout integration/resilience
+python3 -m pytest -q tests/acceptance    # expected: 66 passed
+python3 -m pytest -q                     # expected: 230 passed
+git diff 99ef7bb -- tests/acceptance     # expected: empty
+```
+
+Merge when ready (left to the repo owner on purpose):
+
+```bash
+git checkout main
+git merge --no-ff integration/resilience
+python3 -m pytest -q                     # expected: 230 passed
+```
+
+## Not done / risks
+
+- The merge into `main` is **not** done (H11), and the two-terminal smoke test has not
+  been run against the real desktop clipboard (H12).
+- The resilience suite uses fake transports for deterministic backoff assertions and
+  one real loopback “relay starts later” test; long real outages, network switching,
+  laptop suspend/resume and `wss://` reconnects are still unmeasured.
+- Jitter is randomness-based in production (deterministic only via the injected `rand`
+  in tests); backoff can reach the 30 s cap, so recovery after a long outage may take
+  up to ~30 s between attempts (bounded and intentional).
+- The peer `listen` has no dedup: replayed or duplicate frames are printed/saved again
+  (the file name is the message id, so duplicates overwrite the same image file).
+- `clipsync-peer` is a CLI tool, not a long-running phone substitute; the Android
+  client and remote relay deployment remain H3/next-run work.
