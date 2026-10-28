@@ -4,14 +4,27 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+from pathlib import Path
 import threading
 import time
 from typing import Any, Callable
 import urllib.parse
 
+from meshcore.addressing import (
+    Address,
+    LastGoodStore,
+    default_state_dir,
+    ordered_addresses,
+    parse_address,
+)
 from meshcore.config import MeshConfig, PeerConfig, format_ws_url
 from meshcore.coordination import order
 from meshcore.crypto import GroupCipher, MeshCryptoError
+from meshcore.discovery import (
+    Discovery,
+    DiscoverySocket,
+    create_udp_socket,
+)
 from meshcore.election import Election
 from meshcore.hub import HubServer
 from meshcore.link import Link, LinkError, probe_hub
@@ -54,15 +67,31 @@ class Node:
         *,
         can_reach: Callable[[str, str], bool] | None = None,
         clock: Callable[[], float] | None = None,
+        probe_url: Callable[[str, float], bool] | None = None,
+        discovery_socket_factory: Callable[[], DiscoverySocket] | None = None,
     ) -> None:
         self._config: MeshConfig = config
         self._can_reach: Callable[[str, str], bool] = (
             can_reach if can_reach is not None else (lambda a, b: True)
         )
         self._clock: Callable[[], float] | None = clock
+        self._probe_url: Callable[[str, float], bool] = (
+            probe_url if probe_url is not None else probe_hub
+        )
+        self._discovery_socket_factory: Callable[[], DiscoverySocket] | None = (
+            discovery_socket_factory
+        )
         self._peer_by_id: dict[str, PeerConfig] = {
             p.device_id: p for p in config.peers
         }
+
+        state_dir = (
+            Path(config.state_dir)
+            if config.state_dir is not None
+            else default_state_dir()
+        )
+        self._last_good: LastGoodStore = LastGoodStore(state_dir / "last_good.json")
+        self._discovery: Discovery | None = None
 
         self._cipher: GroupCipher | None = None
         if config.role != "relay" and config.e2e_key is not None:
@@ -146,6 +175,20 @@ class Node:
         with self._link_lock:
             return self._link is not None and self._link.connected
 
+    @property
+    def connection_url(self) -> str | None:
+        """The WebSocket URL of the active client link, or None."""
+        with self._link_lock:
+            if self._link is not None and self._link.connected:
+                return self._link.url
+            return None
+
+    @property
+    def discovery(self) -> Discovery | None:
+        """The Discovery instance, or None if discovery is off or relay."""
+        with self._lifecycle_lock:
+            return self._discovery
+
     def on_receive(self, callback: Callable[[str | None, bytes], None]) -> None:
         """Register a callback for received application payloads."""
         self._receive_callbacks.append(callback)
@@ -167,8 +210,14 @@ class Node:
                     non_loopback = True
                 else:
                     for peer in self._config.peers:
-                        if not _is_loopback(_extract_host(peer.address)):
+                        if peer.address and not _is_loopback(_extract_host(peer.address)):
                             non_loopback = True
+                            break
+                        for addr in peer.addresses:
+                            if not _is_loopback(addr.host):
+                                non_loopback = True
+                                break
+                        if non_loopback:
                             break
                     if not non_loopback and self._config.relay is not None:
                         if not _is_loopback(_extract_host(self._config.relay.address)):
@@ -216,7 +265,31 @@ class Node:
             )
             self._hub.start()
 
-            # 2. Start election driver
+            # 2. Start discovery (if enabled)
+            if self._config.discovery:
+                try:
+                    sock = (
+                        self._discovery_socket_factory()
+                        if self._discovery_socket_factory is not None
+                        else create_udp_socket(self._config.discovery_port)
+                    )
+                    self._discovery = Discovery(
+                        group_id=self._config.group_id,
+                        device_id=self._config.device_id,
+                        token=self._config.token,
+                        port=self._hub.port,
+                        socket=sock,
+                        peers={p.device_id for p in self._config.peers},
+                        clock=self._clock if self._clock is not None else time.monotonic,
+                        interval=self._config.discovery_interval,
+                        logger=logging.getLogger("meshcore.discovery"),
+                    )
+                    self._discovery.start()
+                except Exception as exc:
+                    logger.warning("Failed to start discovery: %s", exc)
+                    self._discovery = None
+
+            # 3. Start election driver
             preferred_id = self._config.relay.device_id if self._config.relay is not None else None
             self._election = Election(
                 self_hello=self._config.hello(),
@@ -234,7 +307,7 @@ class Node:
             self._election.start()
 
     def stop(self) -> None:
-        """Stop link, election, and hub server, and release listening port. Idempotent."""
+        """Stop link, election, discovery, and hub server, and release listening port. Idempotent."""
         with self._lifecycle_lock:
             if self._stopped or not self._started:
                 self._stopped = True
@@ -244,6 +317,9 @@ class Node:
 
             election = self._election
             self._election = None
+
+            discovery = self._discovery
+            self._discovery = None
 
             with self._link_lock:
                 link = self._link
@@ -256,6 +332,9 @@ class Node:
 
         if election is not None:
             election.stop()
+
+        if discovery is not None:
+            discovery.stop()
 
         if link is not None:
             link.close()
