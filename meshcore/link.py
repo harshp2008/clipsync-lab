@@ -30,6 +30,19 @@ __all__ = [
 ]
 
 
+def _cancel_pending_tasks(loop: asyncio.AbstractEventLoop) -> None:
+    """Cancel and drain tasks left on a loop that is about to close."""
+    if loop.is_closed():
+        return
+    pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+    if not pending:
+        return
+    for task in pending:
+        task.cancel()
+    with contextlib.suppress(Exception):
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+
+
 class LinkError(Exception):
     """Transport or protocol error in a meshcore Link."""
 
@@ -294,6 +307,7 @@ class Link:
         except asyncio.CancelledError:
             pass
         finally:
+            _cancel_pending_tasks(loop)
             with contextlib.suppress(Exception):
                 loop.run_until_complete(loop.shutdown_asyncgens())
             loop.close()

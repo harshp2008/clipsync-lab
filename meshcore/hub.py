@@ -33,6 +33,25 @@ __all__ = [
 ]
 
 
+def _cancel_pending_tasks(loop: asyncio.AbstractEventLoop) -> None:
+    """Cancel and drain tasks left on a loop that is about to close.
+
+    websockets can leave a ``close_connection`` task pending when the peer
+    disappears while the server is shutting down; closing the loop then makes
+    asyncio log "Task was destroyed but it is pending".  Drain them here so a
+    stop() is quiet.
+    """
+    if loop.is_closed():
+        return
+    pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+    if not pending:
+        return
+    for task in pending:
+        task.cancel()
+    with contextlib.suppress(Exception):
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+
+
 class HubServer:
     """Synchronous lifecycle wrapper around an asyncio WebSocket hub server."""
 
@@ -309,6 +328,7 @@ class HubServer:
         try:
             loop.run_until_complete(self._serve())
         finally:
+            _cancel_pending_tasks(loop)
             with contextlib.suppress(Exception):
                 loop.run_until_complete(loop.shutdown_asyncgens())
             loop.close()
