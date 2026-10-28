@@ -18,9 +18,9 @@ clipsync-peer = "clipsync.peer:main"
 test = ["pytest>=7"]
 
 [tool.setuptools]
-packages = ["clipsync"]
+packages = ["clipsync", "meshcore"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-ra"
+addopts = "-ra --import-mode=importlib"
