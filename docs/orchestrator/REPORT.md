@@ -735,3 +735,137 @@ python3 -m pytest -q tests/acceptance/test_meshcore_exploratory.py -m explorator
 ```
 
 Merge when ready (owner): `git checkout main && git merge --no-ff integration/hub-election`.
+
+# Groups run (2026-10-29) — DONE on `integration/groups`, not merged to `main`
+
+Branch `integration/groups`, cut from `main` at `3fdcea2` (277 tests). `main` was not
+touched; the owner merges (H18).
+
+## Delivered
+
+- `docs/design/meshcore-groups.md`: frozen contract (config, wire, hub, election,
+  crypto, Node, clipsync mapping, dependency allowlist).
+- `tests/acceptance/test_meshcore_groups.py`: frozen G1–G7 (12 tests) + `tests/conftest.py`
+  (websockets logger at WARNING during tests, test-side only).
+- `meshcore/config.py`: `GroupConfig`, `RelayConfig`, `GROUP_DEFAULT`, `MeshConfig`
+  group/e2e/relay fields and validation.
+- `meshcore/messages.py`: `Hello.group_id` (default omitted on the wire for back-compat).
+- `meshcore/hub.py`: multi-group token→group auth, 1008 group-mismatch rejection,
+  per-group rosters/forwarding, old-client-by-token, `roster(group_id)`,
+  `broadcast(payload, group_id)`, pending-loop-task draining on stop.
+- `meshcore/election.py`: optional `preferred_id` probed ahead of the per-group member
+  election; the existing `HubTracker` debounce still owns all changes.
+- `meshcore/crypto.py`: Fernet `GroupCipher` (lazy `importlib` cryptography import to
+  keep frozen A10 green; H17).
+- `meshcore/node.py`: per-group encrypt/decrypt, `dropped_undecryptable`, non-loopback
+  key gate with `allow_insecure` WARNING, relay-only role, preferred-relay link,
+  per-group roster filtering.
+- `clipsync/config.py`: `group_id`, `allow_insecure`, `role`, `serve_groups`, `relay`
+  TOML parsing plus `to_mesh_config`/`uses_meshcore`.
+- `clipsync/daemon.py`: relay-only run path; mesh members use `NodeTransport` with
+  `codec=None` (no double encryption); legacy single-relay path unchanged.
+- `pyproject.toml`: declares `websockets` (already used, previously undeclared).
+- Docs: `docs/design/coordination-v2.md` §15 "Groups"; `README.md` § "Two groups on
+  one TV box".
+
+## Gate evidence
+
+| Gate | Result |
+|---|---|
+| Contract commit | `3ed5a9050d660afd01902df5cd2cdb3bdda39b63` |
+| `git diff 3ed5a90 -- tests/` | **empty** (agy did not touch any test) |
+| `tests/acceptance/test_meshcore_groups.py`, 20 runs | **20/20 passed**, 12 tests each, 17–18 s/run, no `Logging error`, no `Task was destroyed` |
+| Full suite, clean shell (`env -u PYTHONPATH`), 5 runs | **5/5 passed**, 289 passed each, no stderr noise |
+| Full suite, ROS PYTHONPATH, 5 runs | **5/5 passed**, 289 passed each, no stderr noise |
+| Baseline | 277 passed before; new file adds 12 tests; **289 final** |
+
+The first full-suite run after the takeover exposed one `Logging error`/`Task was
+destroyed` from a pending websockets `close_connection` task. Fixed at the source:
+`HubServer`/`Link` cancel and drain pending loop tasks before closing the asyncio loop
+(commit `11a041c`). The 5 clean and 5 ROS runs above are after that fix.
+
+## agy usage
+
+`agy_usage` before the single job: Gemini weekly **97.71%**, 5h **100%** remaining.
+After: weekly **96.76%**, 5h **96.71%**. Delta ≈ **0.94 weekly points**, **3.29
+5h points** (the job's own `usage_cost` reports the same). One job id
+`14186961-f528-4fdb-8cfd-39c8ec800e73`, ~15 min, 7 commits; it stopped twice with
+`invalid_commit_message` (wrapper checkpoint subject) before verify ran. Per D48 the
+last two modules were finished by me; no second agy job was started.
+
+Steps: ~100 model/tool steps (the last harness step stamp before the final gate
+commands was 93; the 5+5 gate, usage check and docs/report edits follow).
+
+## Security notes
+
+- **What the hub/relay operator sees:** group ids, device ids, roster membership,
+  sender ids in the data envelope, frame sizes/timing, and ciphertext. **Not** the
+  group key or any clipboard plaintext. The relay role has no key at all and never
+  decrypts.
+- **What they can do:** drop, delay or replay ciphertext; forge roster/control
+  messages (the roster is not authenticated); impersonate a member at the transport
+  level if they have that group's token. Fernet authenticates payloads, so they cannot
+  forge a plaintext the members accept, but they can cause availability failures and
+  metadata leakage. This is the documented design: the hub is trusted for routing,
+  not for confidentiality.
+- **Token still crosses `ws://` in cleartext without TLS.** Anyone who can sniff the
+  network or read the TV box config can get the group token and join that group's
+  transport (they still cannot decrypt without the key; they can inject/receive
+  ciphertext and cause drops). Use a private tailnet/trusted LAN, keep tokens and keys
+  out of git, and rotate both if a device or the network is lost. TLS remains H15.
+- **Key handling:** one Fernet key per group, members only; a node with a
+  non-loopback bind/peer/relay must have `e2e_key` or `allow_insecure=true` (which
+  logs a WARNING). Loopback no-key development remains as before. Removing a device
+  from the roster does not revoke its key; rotate the group key manually.
+- **No double encryption:** on meshcore, `Node` is the only payload encryption layer
+  and the daemon passes `codec=None`; the legacy single-relay path keeps the old
+  clipsync codec. Old clients cannot decrypt a keyed group and are silently dropped
+  (counted), so do not mix old clients into an encrypted group.
+- **Group isolation:** token→group binding plus hello group check plus per-group
+  forwarding. A frame forced into another group (test G5) is undecryptable and
+  counted; it is never delivered as plaintext.
+
+## Ambiguities and decisions (all decided; none asked-owner, H17/H18 are owner items)
+
+| # | Ambiguity | Decision |
+|---|---|---|
+| 1 | Frozen A10 allows `websockets` only in `hub.py`/`link.py`, but requirement 5 needs `cryptography` in `meshcore/crypto.py` and says not to edit A10 | **Decided:** `crypto.py` uses a documented lazy `importlib.import_module("cryptography.fernet")`; the new G7 allowlist permits `cryptography` for `crypto.py` and keeps the stdlib rule elsewhere. Owner can simplify when A10 is unfrozen (H17). |
+| 2 | Can a member hub also `serve_groups`? | **Decided:** no — multi-group service is the relay-only role; a member with `serve_groups` is a config error. Keeps the member's app receive path single-group and matches the TV-box design. |
+| 3 | Is the relay required to have an `e2e_key` off-loopback? | **Decided:** no; the relay has no key by design, so it is exempt from the key-start gate. Members, peers and the relay address are not exempt. |
+| 4 | Relay top-level `token` still required? | **Decided:** yes, to keep every old config valid; a relay ignores it and uses the per-group tokens. |
+| 5 | How is a relay identified in `Node.hub_id` if it is not a member? | **Decided:** synthetic `RelayConfig.device_id` (default `"relay"`), validated not to collide with the node/peer ids, never in a roster. |
+| 6 | Old clients on a multi-group hub | **Decided:** mapped by token only; they cannot claim a group, receive raw payloads and no rosters. A helloed client claiming the wrong group is closed (1008). |
+| 7 | `uses_meshcore` for a member with `relay` but no peers | **Decided:** true (meshcore path); if the relay is down the fallback election is just itself. The contract was corrected after the agy job. |
+| 8 | G7 runs "the suite" but cannot run itself | **Decided:** the subprocess runs the full suite with only the new acceptance file ignored, `PYTHONPATH` removed; the 20x gate therefore still re-runs the suite 20 times. |
+| 9 | agy job ended twice with `invalid_commit_message` before verify | **Decided:** no second job; gate checked, branch merged, last two modules taken over, logged D48. |
+| 10 | The request says "on main" in one place, never merge to `main` in another | **Decided:** `main` untouched; `integration/groups` is the deliverable and H18 leaves the merge to the owner. |
+
+## Not done / risks
+
+- LAN discovery (phase 2b), naming service/website, panel, routing preferences,
+  Android, TLS, state/event channels, a device in two groups, and cross-group sharing
+  are out of scope.
+- Tokens in `serve_groups` are plaintext in the relay config and on `ws://`; TLS and a
+  secret-file form for `serve_groups` are follow-ups (H15).
+- The `websockets` dependency is now declared but not pinned; the environment has
+  10.4 and 41.0.7 cryptography.
+- The new tests use loopback only; no real TV box, phone or two-family deployment was
+  exercised.
+
+## How to verify
+
+```bash
+git checkout integration/groups
+git diff 3ed5a9050d660afd01902df5cd2cdb3bdda39b63 -- tests/   # empty
+env -u PYTHONPATH python3 -m pytest -q tests/acceptance/test_meshcore_groups.py  # 12
+env -u PYTHONPATH python3 -m pytest -q                                           # 289
+```
+
+ROS shell check:
+
+```bash
+PYTHONPATH=/opt/ros/jazzy/opt/gz_sim_vendor/lib/python:/opt/ros/jazzy/opt/sdformat_vendor/lib/python:/opt/ros/jazzy/opt/gz_transport_vendor/lib/python:/opt/ros/jazzy/opt/gz_msgs_vendor/lib/python:/opt/ros/jazzy/opt/gz_math_vendor/lib/python:/opt/ros/jazzy/lib/python3.12/site-packages \
+  python3 -m pytest -q
+```
+
+Merge when ready (owner, H18): `git checkout main && git merge --no-ff integration/groups`.

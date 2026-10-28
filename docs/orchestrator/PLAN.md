@@ -1,4 +1,43 @@
-# clipsync-lab — Orchestrator Plan
+# clipsync-lab — Groups run plan (GATED)
+
+Workflow: **GATED** — write the contract and the frozen acceptance tests first, commit
+them, then run exactly ONE agy implementation job (max 45 min) that must not touch
+`tests/acceptance`; review the diff, merge into `integration/groups`, and run the
+20x/5+5 gate myself. The owner merges into `main`; this run never does.
+
+Branch: `integration/groups`, cut from `main` at `3fdcea2` (277 tests).
+
+| Step | Owner | Status |
+|---|---|---|
+| Read design, meshcore, clipsync config/crypto, A-tests | me | done |
+| Contract `docs/design/meshcore-groups.md` | me | done (`3ed5a90`) |
+| Frozen `tests/acceptance/test_meshcore_groups.py` (G1–G7) + `tests/conftest.py` | me | done (`3ed5a90`) |
+| Commit contract/tests, freeze commit hash | me | done (`3ed5a9050d660afd01902df5cd2cdb3bdda39b63`) |
+| One agy implementation job (45 min) | agy | done with two odd stops; last 2 modules taken over (D48) |
+| Gate: `git diff <contract> -- tests/` empty, review, merge | me | done (empty; merged `59972c1`) |
+| Acceptance 20x; full suite 5x clean + 5x ROS PYTHONPATH | me | done: 20/20, 5/5, 5/5 (D49) |
+| Docs: coordination-v2 Groups section + README two-group setup | me | done |
+| Report, decisions, needs-human | me | done |
+
+## Run log (2026-10-29)
+
+- 00:13 IST — branch `integration/groups` cut from `main` `3fdcea2` (277 tests); read
+  the design, meshcore, clipsync config/crypto and the A-tests.
+- ~00:25 — contract + frozen G1–G7 tests + `tests/conftest.py` committed as
+  `3ed5a90`; new file red before implementation (expected).
+- 00:26 — `agy_usage` checked (weekly 97.7%, 5h 100%); one `agy_start`, verify
+  `python3 -m pytest -q tests/acceptance/test_meshcore_groups.py`, max 45 min.
+- 00:42 — job stopped twice with `invalid_commit_message` after checkpoint commits;
+  it had implemented config/messages/hub/election/crypto/node/pyproject. Gate on
+  `tests/` empty; merged at `59972c1`; took over `clipsync/config.py` and
+  `clipsync/daemon.py` (D48).
+- 00:44 — first full-suite run exposed one pending-loop-task `Logging error`;
+  added bounded pending-task draining to `HubServer`/`Link`; 5 clean full-suite runs
+  followed with no noise.
+- 00:50 — groups acceptance 20/20 (12 passed each), full suite 5/5 clean and 5/5 with
+  the ROS PYTHONPATH (289 passed each, no logging noise); docs and report updated.
+
+## Historical plan (earlier runs)
 
 Goal: reliable two-way clipboard sync (text **and** images) between an Ubuntu GNOME
 Wayland laptop and an Android phone; research the landscape, then prototype the

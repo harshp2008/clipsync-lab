@@ -15,7 +15,7 @@ import urllib.parse
 
 import tomllib
 
-from meshcore.config import MeshConfig, PeerConfig
+from meshcore.config import GroupConfig, MeshConfig, PeerConfig, RelayConfig
 from .crypto import CryptoError, FernetCodec
 
 __all__ = ["ConfigError", "DaemonConfig", "load_config"]
@@ -32,6 +32,11 @@ _ALLOWED_KEYS = frozenset(
         "perm",
         "temp_rank",
         "will_hub",
+        "group_id",
+        "allow_insecure",
+        "role",
+        "serve_groups",
+        "relay",
         "bind",
         "port",
         "peers",
@@ -58,6 +63,11 @@ class DaemonConfig:
     perm: int | None = None
     temp_rank: int | None = None
     will_hub: bool = True
+    group_id: str = "default"
+    allow_insecure: bool = False
+    role: str = "member"
+    serve_groups: tuple[GroupConfig, ...] = ()
+    relay: RelayConfig | None = None
     bind: str = "127.0.0.1"
     port: int = 8765
     peers: tuple[PeerConfig, ...] = ()
@@ -68,6 +78,8 @@ class DaemonConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.peers, tuple):
             object.__setattr__(self, "peers", tuple(self.peers))
+        if not isinstance(self.serve_groups, tuple):
+            object.__setattr__(self, "serve_groups", tuple(self.serve_groups))
 
     def to_mesh_config(self) -> MeshConfig:
         """Convert this configuration into a meshcore MeshConfig."""
@@ -78,12 +90,22 @@ class DaemonConfig:
             perm=self.perm,
             temp_rank=self.temp_rank,
             will_hub=self.will_hub,
+            group_id=self.group_id,
+            e2e_key=self.e2e_key,
+            allow_insecure=self.allow_insecure,
+            role=self.role,
+            serve_groups=self.serve_groups,
+            relay=self.relay,
             bind=self.bind,
             port=self.port,
             peers=self.peers,
             reconnect_delay=self.reconnect_delay,
             connect_timeout=self.connect_timeout,
         )
+
+    def uses_meshcore(self) -> bool:
+        """Whether this config must run on a meshcore Node (not the legacy relay)."""
+        return bool(self.peers) or self.role == "relay" or self.relay is not None
 
 
 def _validate_positive_float(value: Any, name: str) -> float:
@@ -214,6 +236,88 @@ def load_config(path: str | Path) -> DaemonConfig:
             raise ConfigError(f"'will_hub' must be a bool, got {val!r}")
         will_hub = val
 
+    # group_id
+    group_id: str = "default"
+    if "group_id" in data and data["group_id"] is not None:
+        val = data["group_id"]
+        if not isinstance(val, str):
+            raise ConfigError("'group_id' must be a string")
+        group_id = val.strip()
+        if not (1 <= len(group_id) <= 128):
+            raise ConfigError(
+                f"'group_id' must be between 1 and 128 characters after strip, got length {len(group_id)}"
+            )
+
+    # allow_insecure
+    allow_insecure: bool = False
+    if "allow_insecure" in data and data["allow_insecure"] is not None:
+        val = data["allow_insecure"]
+        if not isinstance(val, bool):
+            raise ConfigError(f"'allow_insecure' must be a bool, got {val!r}")
+        allow_insecure = val
+
+    # role
+    role: str = "member"
+    if "role" in data and data["role"] is not None:
+        val = data["role"]
+        if not isinstance(val, str) or val.strip() not in ("member", "relay"):
+            raise ConfigError(f"'role' must be 'member' or 'relay', got {val!r}")
+        role = val.strip()
+
+    # serve_groups (hub side: ids and tokens only, never keys)
+    serve_groups_list: list[GroupConfig] = []
+    if "serve_groups" in data and data["serve_groups"] is not None:
+        raw_groups = data["serve_groups"]
+        if not isinstance(raw_groups, list):
+            raise ConfigError(
+                f"'serve_groups' must be a list of tables, got {type(raw_groups).__name__}"
+            )
+        _group_allowed_keys = frozenset({"id", "token"})
+        for i, group in enumerate(raw_groups):
+            if not isinstance(group, dict):
+                raise ConfigError(f"serve_groups #{i} must be a table")
+            g_unknown = set(group.keys()) - _group_allowed_keys
+            if g_unknown:
+                raise ConfigError(
+                    f"Unknown serve_groups key(s) in entry #{i}: {', '.join(sorted(g_unknown))}"
+                )
+            if "id" not in group or not isinstance(group["id"], str) or not group["id"].strip():
+                raise ConfigError(f"serve_groups #{i} missing required string 'id'")
+            if "token" not in group or not isinstance(group["token"], str) or not group["token"].strip():
+                raise ConfigError(f"serve_groups #{i} missing required string 'token'")
+            try:
+                serve_groups_list.append(GroupConfig(group["id"].strip(), group["token"].strip()))
+            except ValueError as exc:
+                raise ConfigError(f"Invalid serve_groups #{i}: {exc}") from exc
+        g_ids = [group.id for group in serve_groups_list]
+        g_tokens = [group.token for group in serve_groups_list]
+        if len(set(g_ids)) != len(g_ids):
+            raise ConfigError("'serve_groups' ids must be unique")
+        if len(set(g_tokens)) != len(g_tokens):
+            raise ConfigError("'serve_groups' tokens must be unique")
+    serve_groups = tuple(serve_groups_list)
+
+    # relay (member side: preferred hub address)
+    relay_obj: RelayConfig | None = None
+    if "relay" in data and data["relay"] is not None:
+        raw_relay = data["relay"]
+        if not isinstance(raw_relay, dict):
+            raise ConfigError(f"'relay' must be a table, got {type(raw_relay).__name__}")
+        r_unknown = set(raw_relay.keys()) - frozenset({"address", "device_id"})
+        if r_unknown:
+            raise ConfigError(f"Unknown relay key(s): {', '.join(sorted(r_unknown))}")
+        if "address" not in raw_relay or not isinstance(raw_relay["address"], str) or not raw_relay["address"].strip():
+            raise ConfigError("'relay' missing required string 'address'")
+        r_device_id = "relay"
+        if "device_id" in raw_relay and raw_relay["device_id"] is not None:
+            if not isinstance(raw_relay["device_id"], str) or not raw_relay["device_id"].strip():
+                raise ConfigError("'relay.device_id' must be a non-empty string")
+            r_device_id = raw_relay["device_id"].strip()
+        try:
+            relay_obj = RelayConfig(address=raw_relay["address"].strip(), device_id=r_device_id)
+        except ValueError as exc:
+            raise ConfigError(f"Invalid 'relay': {exc}") from exc
+
     # bind
     bind: str = "127.0.0.1"
     if "bind" in data and data["bind"] is not None:
@@ -288,7 +392,7 @@ def load_config(path: str | Path) -> DaemonConfig:
                 f"'relay_url' must have scheme 'ws' or 'wss' and a non-empty host, got {relay_url_raw!r}"
             )
         relay_url = relay_url_raw
-    elif not peers:
+    elif not peers and relay_obj is None and role != "relay":
         raise ConfigError("Missing required key: 'relay_url'")
 
     # token / token_file
@@ -316,6 +420,25 @@ def load_config(path: str | Path) -> DaemonConfig:
         except CryptoError as exc:
             raise ConfigError("Invalid Fernet key in 'e2e_key' / 'e2e_key_file'") from exc
 
+    # cross-field validation for groups / relay role
+    if role == "relay":
+        if not serve_groups:
+            raise ConfigError("'role = \"relay\"' requires at least one 'serve_groups' entry")
+        if peers:
+            raise ConfigError("'role = \"relay\"' must not configure 'peers'")
+        if e2e_key is not None:
+            raise ConfigError("'role = \"relay\"' must not have an 'e2e_key'")
+        if relay_obj is not None:
+            raise ConfigError("'role = \"relay\"' must not configure a 'relay'")
+    elif serve_groups:
+        raise ConfigError("'serve_groups' is only valid with 'role = \"relay\"'")
+
+    if relay_obj is not None:
+        if relay_obj.device_id == device_id:
+            raise ConfigError("'relay.device_id' must differ from 'device_id'")
+        if any(peer.device_id == relay_obj.device_id for peer in peers):
+            raise ConfigError("'relay.device_id' must differ from every peer 'device_id'")
+
     # numeric values
     poll_interval = 0.5
     if "poll_interval" in data:
@@ -342,6 +465,11 @@ def load_config(path: str | Path) -> DaemonConfig:
         perm=perm,
         temp_rank=temp_rank,
         will_hub=will_hub,
+        group_id=group_id,
+        allow_insecure=allow_insecure,
+        role=role,
+        serve_groups=serve_groups,
+        relay=relay_obj,
         bind=bind,
         port=port,
         peers=peers,

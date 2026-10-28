@@ -345,6 +345,56 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _run_relay(
+    config: DaemonConfig,
+    *,
+    once: bool,
+    stop_event: threading.Event | None,
+) -> int:
+    """Run a relay-only daemon (serves its groups, no clipboard, no codec)."""
+    from meshcore.node import Node
+
+    node = Node(config.to_mesh_config())
+    try:
+        node.start()
+    except Exception as exc:  # noqa: BLE001 - report a startup failure to the CLI
+        sys.stderr.write(f"Relay startup error: {exc}\n")
+        return 1
+
+    logger.info(
+        "relay serving groups %s on %s:%s",
+        ", ".join(group.id for group in config.serve_groups),
+        config.bind,
+        config.port,
+    )
+    if once:
+        node.stop()
+        return 0
+
+    if stop_event is None:
+        run_stop = threading.Event()
+
+        def _sig_handler(_signum: int, _frame: Any) -> None:
+            run_stop.set()
+
+        try:
+            signal.signal(signal.SIGINT, _sig_handler)
+            signal.signal(signal.SIGTERM, _sig_handler)
+        except (ValueError, AttributeError):
+            pass
+    else:
+        run_stop = stop_event
+
+    try:
+        while not run_stop.wait(0.2):
+            pass
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.stop()
+    return 0
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -376,10 +426,14 @@ def main(
         sys.stderr.write(f"Configuration error: {exc}\n")
         return 2
 
+    if config.role == "relay":
+        return _run_relay(config, once=args.once, stop_event=stop_event)
+
+    mesh_mode = config.uses_meshcore()
     make_clipboard = clipboard_factory or build_clipboard
     if transport_factory is not None:
         make_transport = transport_factory
-    elif config.peers:
+    elif mesh_mode:
         from meshcore.node import Node
         from .mesh_transport import NodeTransport
 
@@ -390,7 +444,9 @@ def main(
         make_transport = _make_mesh_transport
     else:
         make_transport = build_transport
-    make_codec = codec_factory or build_codec
+    # On meshcore, meshcore owns payload encryption; clipsync's codec is only for
+    # the legacy single-relay path. An explicitly injected factory still wins.
+    make_codec = codec_factory or (None if mesh_mode else build_codec)
 
     clipboard = make_clipboard(config)
     transport = make_transport(config)
