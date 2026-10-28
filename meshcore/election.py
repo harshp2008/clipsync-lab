@@ -29,6 +29,7 @@ class Election:
         missed_pongs: int = 3,
         probe_timeout: float = 2.0,
         debounce: float = 30.0,
+        preferred_id: str | None = None,
         on_hub_changed: Callable[[str], None] | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -40,6 +41,7 @@ class Election:
         self._missed_pongs_limit: int = missed_pongs
         self._probe_timeout: float = probe_timeout
         self._debounce: float = debounce
+        self._preferred_id: str | None = preferred_id
         self._on_hub_changed: Callable[[str], None] | None = on_hub_changed
         self._logger: logging.Logger = logger if logger is not None else logging.getLogger("meshcore.election")
 
@@ -122,12 +124,16 @@ class Election:
                     return False
                 return res
 
-            candidate, forced = probe_hub(
-                all_devices,
-                election_ping,
-                self._probe_timeout,
-                self._self_hello.device_id,
-            )
+            if self._preferred_id is not None and election_ping(self._preferred_id, self._probe_timeout):
+                candidate = self._preferred_id
+                forced = False
+            else:
+                candidate, forced = probe_hub(
+                    all_devices,
+                    election_ping,
+                    self._probe_timeout,
+                    self._self_hello.device_id,
+                )
 
             self._consecutive_missed_pongs = missed_counter[0]
             self._last_forced = forced
