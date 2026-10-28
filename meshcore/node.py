@@ -153,18 +153,24 @@ class Node:
             self._stopped = True
             self._started = False
 
-            if self._election is not None:
-                self._election.stop()
-                self._election = None
+            election = self._election
+            self._election = None
 
             with self._link_lock:
-                if self._link is not None:
-                    self._link.close()
-                    self._link = None
+                link = self._link
+                self._link = None
 
-            if self._hub is not None:
-                self._hub.stop()
-                self._hub = None
+            hub = self._hub
+            self._hub = None
+
+        if election is not None:
+            election.stop()
+
+        if link is not None:
+            link.close()
+
+        if hub is not None:
+            hub.stop()
 
     def publish(self, payload: bytes | bytearray | memoryview) -> None:
         """Publish payload to the cluster. Raises NodeError if no live route."""
