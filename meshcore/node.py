@@ -11,7 +11,6 @@ from typing import Any, Callable
 import urllib.parse
 
 from meshcore.addressing import (
-    Address,
     LastGoodStore,
     default_state_dir,
     ordered_addresses,
