@@ -410,3 +410,40 @@ mesh; the hub forwards opaque bytes, so the optional clipsync Fernet key still
 protects payloads end to end, but without it the hub can read clipboard frames. Treat
 off-loopback binding as trusted-network only until a TLS/reverse-proxy phase. This is
 recorded in NEEDS_HUMAN H15 and the REPORT security note.
+
+## D43 — A6 logging assertion and meshcore log noise (2026-10-28 20:20 IST)
+The A6 behaviour was correct: the forced-hub WARNING is emitted and appears in the
+captured stderr. The failure was in the test harness, not the contract. With a ROS
+Jazzy shell, `launch_testing` (auto-loaded by pytest) imports `launch.logging`, whose
+`LaunchLogger.__init__` sets `propagate = False` and whose module calls
+`logging.setLoggerClass(LaunchLogger)`. Every logger created after that point (here
+`meshcore.election`) is a `LaunchLogger`, so its records never propagate to
+`caplog`'s root handler. Bisection: `-p no:launch_testing` removes the failure;
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` passes. Therefore A6 now attaches a small
+`logging.Handler` to `meshcore.election` for the duration of the forced-hub window and
+removes it in a `finally`; the asserted behaviour is unchanged (a WARNING containing
+"forced" and "n1"). No other test uses `caplog` (grep confirms only A6 did).
+
+For the unrelated end-of-run noise: websockets logs one INFO line per probe/open/
+close. Election liveness is a bare TCP connect, which makes the server log a failed
+HTTP handshake ("connection failed (400 Bad Request)") every probe. A real WebSocket
+(or even HTTP) request was tried first, but it makes the hub's event loop do work on
+every election round; that extra latency widened a pre-existing race in the frozen A6
+test from ~10-15% to ~45% failures in 20 local runs. Because the frozen test must stay
+unchanged, this is the documented fallback: `HubServer` raises the `websockets.server`
+logger to WARNING at import, so the per-connection INFO chatter (including the failed
+handshake) never reaches logs or pytest's capture stream. `probe_hub` keeps the bare
+TCP connect with the same timeout. `HubServer.stop()` now joins with a bounded timeout
+and leaves the handle for a retry if it does not finish, instead of blocking forever.
+
+## D44 — No thread leak found; lifecycle test added (2026-10-28 20:20 IST)
+A per-test teardown check (thread snapshots at `pytest_runtest_setup`) and a
+`pytest_sessionfinish` snapshot found no surviving meshcore threads: every Node/
+HubServer created by the tests is stopped, and `stop()` joins on the normal path. The
+visible "I/O operation on closed file" came from background threads logging during
+pytest's capture-suspension windows, amplified by a probe-driven INFO record every
+20 ms, not from a leaked thread. `tests/test_meshcore_lifecycle.py` now pins the
+lifecycle contract: start/stop (twice) leaves no `meshcore-hub-server` or
+`meshcore-election` thread, the probe against a live hub produces no WARNING/ERROR
+record from the `websockets`/`meshcore` loggers, and a dead port still fails within
+the probe timeout.
