@@ -396,3 +396,19 @@ python3 -m pytest -q                             # full suite must pass
 - 13:05 — run start; branch `integration/coordination` cut from `main` (`d429f66`).
   Baseline full suite on the branch: **230 passed**. `integration/resilience` already
   merged into `main`.
+- 13:07 — contract committed at **`e148a06`** (12 acceptance tests + PLAN); frozen from
+  here on. `agy_usage` immediately before the start: weekly **100%** / 5h **100%**.
+- 13:07 — **job `a7181258-a6de-48e3-a7b8-cd7df10a697b` started**, verify
+  `python3 -m pytest -q`, max 30 min. First wrapper verify (attempt 1) failed on a
+  pytest basename collision between the job's unit tests and the frozen acceptance
+  file; the job added `--import-mode=importlib` and verify passed with **253 tests**
+  on attempt 2. 4 commits, ~7.3 min, audit passed, plan 7/7.
+- 13:15 — **gate passed**: `git diff e148a06 -- tests/acceptance` empty; job diff read
+  in full (only `meshcore/`, its two unit-test files and `pyproject.toml`). Merged with
+  `--no-ff` into `integration/coordination` (`5dd39ad`). I reverted the global
+  `--import-mode=importlib` and renamed the job unit tests to unique basenames
+  (`e201e56`), so `pyproject.toml` gains only the `meshcore` package. Acceptance
+  **78 passed**, full suite **253 passed**; frozen file alone **12 passed**.
+- 13:16 — docs updated; `agy_cleanup` removes the job worktree/branch without force.
+  **`main` remains untouched; merging `integration/coordination` into `main` is left to
+  the human** (see NEEDS_HUMAN H13).

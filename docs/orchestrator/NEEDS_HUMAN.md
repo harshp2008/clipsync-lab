@@ -19,3 +19,5 @@ deliberately **not** done by the agent. Work continued around them.
 | H12 | Run the two-terminal smoke test on the real desktop | It uses the real Wayland clipboard and a live GNOME session; the agent must not touch the real clipboard | Follow `README.md` § "Two-terminal smoke test": start `clipsync-relay`, run `clipsync --config ...` in terminal A, and in terminal B run `clipsync-peer ... listen --output-dir ./received` plus `send-text`/`send-image`. Use a distinct `--device-id`, non-sensitive content only, and revert the clipboard afterwards. Expected: text appears in the listening peer's JSON lines, images land in `./received`, and a relay restart does not kill the daemon. |
 
 _Updated at the end of the run; see `REPORT.md` for status and risks._
+
+| H13 | Merge `integration/coordination` into `main` | The request explicitly reserved every merge into `main` for the repo owner | After reviewing, `git checkout main && git merge --no-ff integration/coordination`, then `python3 -m pytest -q` (expected **253 passed**). `main` was deliberately left at `d429f66`. |
