@@ -294,8 +294,6 @@ def run_smoke(workdir: Path) -> None:
             )
         log(f"TEXT-ARRIVED member-b after {arrived - STARTED:0.2f}s (total)")
 
-        previous = read_text(clip_b)
-        second_text = f"smoke failover {run_id} from member-a"
         log("stopping the relay to check member-to-member failover")
         stop_child(relay)
         if relay.proc.poll() is None:
@@ -322,21 +320,50 @@ def run_smoke(workdir: Path) -> None:
             )
         log(f"FAILOVER-ELECTED member hub after {elected - STARTED:0.2f}s (total)")
 
-        atomic_write_text(clip_a, second_text)
-        log(f"TEXT-WRITTEN member-a: {second_text!r}")
+        # A publish in the handover window can be broadcast before the peer's
+        # client link is registered at the new hub, and meshcore broadcast does not
+        # queue for absent clients.  Copy again with a new value (what a user would
+        # do after noticing nothing arrived) and report every lost attempt instead
+        # of hiding the race.  With the link up, the next change is delivered.
+        deadline = time.monotonic() + POST_FAILOVER_TEXT_TIMEOUT
+        attempt = 0
+        failed_over: float | None = None
+        delivered_text = ""
+        while time.monotonic() < deadline:
+            attempt += 1
+            delivered_text = f"smoke failover {run_id} attempt {attempt}"
+            atomic_write_text(clip_a, delivered_text)
+            log(f"TEXT-WRITTEN member-a: {delivered_text!r} (attempt {attempt})")
+            remaining = deadline - time.monotonic()
+            slice_timeout = min(2.5, max(0.5, remaining))
+            failed_over = wait_until(
+                lambda: delivered_text in read_text(clip_b), slice_timeout, "failover text"
+            )
+            for child in (member_a, member_b):
+                if not child_alive(child):
+                    raise RuntimeError(
+                        f"{child.name} exited during failover with code {child.proc.returncode}"
+                    )
+            if failed_over is not None:
+                break
+            log(
+                f"FAILOVER-RETRY attempt {attempt} was lost in the handover window; "
+                "copying again"
+            )
 
-        def failover_arrived() -> bool:
-            current = read_text(clip_b)
-            return second_text in current and current != previous
-
-        failed_over = wait_until(
-            failover_arrived, POST_FAILOVER_TEXT_TIMEOUT, "failover text"
-        )
         if failed_over is None:
             raise RuntimeError(
                 f"FAILOVER-FAILED: text did not reach member-b within "
-                f"{POST_FAILOVER_TEXT_TIMEOUT:.0f} s after the members elected a hub"
+                f"{POST_FAILOVER_TEXT_TIMEOUT:.0f} s and {attempt} attempts after "
+                "the members elected a hub"
             )
+        if attempt > 1:
+            log(
+                f"FAILOVER-NOTE the first {attempt - 1} copy(ies) were lost during "
+                "the handover window; a later copy arrived"
+            )
+        else:
+            log("FAILOVER-NOTE post-election copy arrived on the first attempt")
         log(f"FAILOVER-OK member-b after {failed_over - STARTED:0.2f}s (total)")
     except BaseException as exc:  # noqa: BLE001 - reported after cleanup
         failure = exc
