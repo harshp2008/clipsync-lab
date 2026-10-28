@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 from meshcore.coordination import Device, HubTracker, probe_hub
 from meshcore.messages import Hello
