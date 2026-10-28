@@ -1,0 +1,33 @@
+[Unit]
+Description=clipsync clipboard daemon (per-user, laptop)
+Documentation=file:%h/clipsync-lab/README.md
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# Per-user unit: no User=, it runs as the logged-in desktop user so it can reach
+# the Wayland clipboard socket in /run/user/<uid>.  Install it as:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/clipsync-member.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now clipsync-member
+# (The agent wrote this unit but did not install or start it.)
+WorkingDirectory=%h/clipsync-lab
+ExecStart=/usr/bin/python3 -m clipsync.daemon --config %h/.config/clipsync/member-laptop.toml
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=on-failure
+RestartSec=2s
+
+# User-service hardening.  ProtectSystem=full keeps /usr, /boot and /etc read-only;
+# there is deliberately no ProtectHome= here because the config and the daemon need
+# ~/.config.  PrivateTmp hides /tmp, so this is Wayland-first: an X11-only session
+# would lose the X11 socket (Wayland sessions are unaffected).
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+RestrictSUIDSGID=true
+UMask=0077
+
+[Install]
+WantedBy=default.target
