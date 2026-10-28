@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import struct
 from typing import Any, Iterable, Mapping
 
 CONTROL_HELLO = "hello"
 CONTROL_ROSTER = "roster"
 CONTROL_LEAVING = "leaving"
+
+ENVELOPE_MAGIC = b"\x00mc2d\x00"
 
 
 @dataclass(frozen=True)
@@ -166,3 +169,38 @@ def decode_leaving(text: str | Mapping[str, Any]) -> bool:
     if data.get("type") != CONTROL_LEAVING:
         raise ValueError(f"Expected type {CONTROL_LEAVING!r}, got {data.get('type')!r}")
     return True
+
+
+def wrap_data_envelope(sender_id: str | None, payload: bytes) -> bytes:
+    """Wrap payload in binary data envelope with sender header.
+
+    Format: b"\\x00mc2d\\x00" + 4-byte big-endian header length + JSON {"from": id|None} + payload
+    """
+    hdr = json.dumps({"from": sender_id}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return ENVELOPE_MAGIC + struct.pack(">I", len(hdr)) + hdr + payload
+
+
+def unwrap_data_envelope(frame: bytes) -> tuple[str | None, bytes]:
+    """Unwrap binary frame, extracting sender id if data envelope is present.
+
+    Returns:
+        (sender_id, payload_bytes).
+        If frame is a bare payload (no envelope), returns (None, frame).
+    """
+    magic_len = len(ENVELOPE_MAGIC)
+    if len(frame) >= magic_len + 4 and frame.startswith(ENVELOPE_MAGIC):
+        hdr_len = struct.unpack(">I", frame[magic_len : magic_len + 4])[0]
+        start_payload = magic_len + 4 + hdr_len
+        if len(frame) >= start_payload:
+            try:
+                hdr_bytes = frame[magic_len + 4 : start_payload]
+                hdr = json.loads(hdr_bytes.decode("utf-8"))
+                if isinstance(hdr, dict) and "from" in hdr:
+                    sender_id = hdr["from"]
+                    if sender_id is not None:
+                        sender_id = str(sender_id)
+                    return (sender_id, frame[start_payload:])
+            except Exception:
+                pass
+    return (None, frame)
+
