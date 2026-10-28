@@ -1,0 +1,38 @@
+# clipsync member example -- your laptop in group "family-a".
+# Copy to ~/.config/clipsync/member-laptop.toml and replace every CHANGE-ME value.
+#
+# The token and the end-to-end key are shared only with the members of this
+# group.  Keep them out of git, screenshots and shell history; chmod 600.
+
+device_id = "laptop"
+name = "Laptop"
+group_id = "family-a"
+
+token = "CHANGE-ME-token-family-a"
+# A group Fernet key has this shape (44 url-safe base64 chars).  This one is a
+# deliberately fake key that decodes to 32 bytes; scripts/gen_secrets.py prints
+# a real one.  The daemon refuses to start while "CHANGE-ME" is still present.
+e2e_key = "CHANGE-ME-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+# Loopback is enough for this laptop plus the two-process smoke test.  For a real
+# phone, bind the laptop's tailnet/LAN address instead (and keep e2e_key set).
+bind = "127.0.0.1"
+port = 8766
+poll_interval = 0.2
+
+# The default clipboard backend is Wayland.  Never set clipboard_backend="file"
+# here: that headless backend is only for tests and would replace your real
+# clipboard with a text file.
+
+# Preferred hub: the relay from examples/relay.toml.  If it is unreachable, the
+# members elect a hub among themselves and hand back when it returns.
+[relay]
+address = "ws://127.0.0.1:8765/"
+device_id = "relay"
+
+# One entry per other device in this group.  Replace the address with the
+# phone's tailnet/LAN address once that device exists.
+[[peers]]
+device_id = "phone"
+name = "Phone"
+address = "CHANGE-ME-phone-host:8766"

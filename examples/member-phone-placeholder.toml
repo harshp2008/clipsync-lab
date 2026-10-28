@@ -1,0 +1,33 @@
+# PLACEHOLDER ONLY -- the Android app is NOT IMPLEMENTED in this repository yet.
+# This file documents the shape the phone will need later; it is not runnable and
+# nothing in this repo builds, installs or tests an Android client.
+#
+# What the Android app will need:
+#   * a foreground service that keeps a WebSocket/meshcore connection to the relay
+#     through Doze and battery optimisation;
+#   * the same group_id, token and e2e_key as the laptop (secrets provisioned by a
+#     QR code or manual entry, never committed);
+#   * a binary-frame client for the room protocol and a text/image clipboard
+#     adapter using Android's ClipboardManager and a file/URI fallback for images;
+#   * the laptop's tailnet/LAN address as a peer and the relay as preferred hub.
+#
+# Do not copy this file into a real deployment until an Android client exists.
+
+device_id = "phone"
+name = "Phone"
+group_id = "family-a"
+
+token = "CHANGE-ME-token-family-a"
+e2e_key = "CHANGE-ME-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+bind = "0.0.0.0"
+port = 8767
+
+[relay]
+address = "ws://CHANGE-ME-relay-host:8765/"
+device_id = "relay"
+
+[[peers]]
+device_id = "laptop"
+name = "Laptop"
+address = "CHANGE-ME-laptop-host:8766"
