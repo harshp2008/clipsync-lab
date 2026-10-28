@@ -23,6 +23,7 @@ class Hello:
     perm: int | None = None
     temp_rank: int | None = None
     will_hub: bool = True
+    group_id: str = "default"
 
 
 def encode_hello(hello: Hello) -> dict[str, Any]:
@@ -31,6 +32,7 @@ def encode_hello(hello: Hello) -> dict[str, Any]:
     device_id and name are always included.
     perm and temp_rank are only included when not None.
     will_hub is always included.
+    group_id is only included when not 'default'.
     """
     data: dict[str, Any] = {
         "device_id": hello.device_id,
@@ -41,6 +43,8 @@ def encode_hello(hello: Hello) -> dict[str, Any]:
         data["perm"] = hello.perm
     if hello.temp_rank is not None:
         data["temp_rank"] = hello.temp_rank
+    if hello.group_id != "default":
+        data["group_id"] = hello.group_id
     return data
 
 
@@ -49,6 +53,7 @@ def decode_hello(data: Mapping[str, Any]) -> Hello:
 
     Absent perm or temp_rank defaults to None.
     Absent will_hub defaults to True.
+    Absent or None group_id defaults to 'default'.
     """
     perm = data.get("perm")
     temp_rank = data.get("temp_rank")
@@ -58,12 +63,19 @@ def decode_hello(data: Mapping[str, Any]) -> Hello:
     else:
         will_hub_val = bool(will_hub)
 
+    group_id = data.get("group_id")
+    if group_id is None or not str(group_id).strip():
+        group_id_val = "default"
+    else:
+        group_id_val = str(group_id).strip()
+
     return Hello(
         device_id=str(data["device_id"]),
         name=str(data["name"]),
         perm=int(perm) if perm is not None else None,
         temp_rank=int(temp_rank) if temp_rank is not None else None,
         will_hub=will_hub_val,
+        group_id=group_id_val,
     )
 
 

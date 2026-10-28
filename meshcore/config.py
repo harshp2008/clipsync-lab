@@ -10,6 +10,17 @@ import urllib.parse
 from meshcore.messages import Hello
 
 DEFAULT_MAX_FRAME_BYTES: int = 4 * ((8 * 1024 * 1024 + 2) // 3) + 8192
+GROUP_DEFAULT: str = "default"
+
+__all__ = [
+    "DEFAULT_MAX_FRAME_BYTES",
+    "GROUP_DEFAULT",
+    "GroupConfig",
+    "MeshConfig",
+    "PeerConfig",
+    "RelayConfig",
+    "format_ws_url",
+]
 
 
 def format_ws_url(address: str) -> str:
@@ -62,6 +73,30 @@ def _validate_non_negative_float(value: Any, name: str) -> float:
 
 
 @dataclass(frozen=True)
+class GroupConfig:
+    """Configuration for a served group on a HubServer."""
+
+    id: str
+    token: str
+
+    def __post_init__(self) -> None:
+        _validate_non_empty_str(self.id, "id")
+        _validate_non_empty_str(self.token, "token")
+
+
+@dataclass(frozen=True)
+class RelayConfig:
+    """Member-side configuration for a preferred relay hub."""
+
+    address: str
+    device_id: str = "relay"
+
+    def __post_init__(self) -> None:
+        _validate_non_empty_str(self.address, "address")
+        _validate_non_empty_str(self.device_id, "device_id")
+
+
+@dataclass(frozen=True)
 class PeerConfig:
     """Static configuration for a known peer device."""
 
@@ -92,6 +127,12 @@ class MeshConfig:
     perm: int | None = None
     temp_rank: int | None = None
     will_hub: bool = True
+    group_id: str = GROUP_DEFAULT
+    e2e_key: str | None = None
+    allow_insecure: bool = False
+    role: str = "member"
+    serve_groups: tuple[GroupConfig, ...] = ()
+    relay: RelayConfig | None = None
     bind: str = "127.0.0.1"
     port: int = 8765
     peers: tuple[PeerConfig, ...] = ()
@@ -111,6 +152,34 @@ class MeshConfig:
         _validate_non_negative_int(self.temp_rank, "temp_rank")
         if not isinstance(self.will_hub, bool):
             raise ValueError(f"will_hub must be a bool, got {self.will_hub!r}")
+
+        _validate_non_empty_str(self.group_id, "group_id")
+        if self.e2e_key is not None:
+            if not isinstance(self.e2e_key, str) or not self.e2e_key.strip():
+                raise ValueError("e2e_key must be None or a non-empty string")
+        if not isinstance(self.allow_insecure, bool):
+            raise ValueError(f"allow_insecure must be a bool, got {self.allow_insecure!r}")
+        if self.role not in ("member", "relay"):
+            raise ValueError(f"role must be 'member' or 'relay', got {self.role!r}")
+
+        if isinstance(self.serve_groups, tuple):
+            serve_groups_tuple = self.serve_groups
+        else:
+            serve_groups_tuple = tuple(self.serve_groups)
+            object.__setattr__(self, "serve_groups", serve_groups_tuple)
+
+        for g in serve_groups_tuple:
+            if not isinstance(g, GroupConfig):
+                raise ValueError(
+                    f"All serve_groups must be GroupConfig instances, got {type(g).__name__}"
+                )
+        g_ids = [g.id for g in serve_groups_tuple]
+        g_tokens = [g.token for g in serve_groups_tuple]
+        if len(set(g_ids)) != len(g_ids):
+            raise ValueError("serve_groups ids must be unique")
+        if len(set(g_tokens)) != len(g_tokens):
+            raise ValueError("serve_groups tokens must be unique")
+
         _validate_non_empty_str(self.bind, "bind")
 
         if isinstance(self.port, bool) or not isinstance(self.port, int) or not (0 <= self.port <= 65535):
@@ -125,6 +194,27 @@ class MeshConfig:
         for p in peers_tuple:
             if not isinstance(p, PeerConfig):
                 raise ValueError(f"All peers must be PeerConfig instances, got {type(p).__name__}")
+
+        if self.role == "member":
+            if serve_groups_tuple:
+                raise ValueError("member role must not set serve_groups")
+            if self.relay is not None:
+                if not isinstance(self.relay, RelayConfig):
+                    raise ValueError(f"relay must be a RelayConfig instance, got {type(self.relay).__name__}")
+                if self.relay.device_id == self.device_id:
+                    raise ValueError("relay device_id cannot match node device_id")
+                peer_ids = {p.device_id for p in peers_tuple}
+                if self.relay.device_id in peer_ids:
+                    raise ValueError("relay device_id cannot match peer device_id")
+        elif self.role == "relay":
+            if not serve_groups_tuple:
+                raise ValueError("relay role requires non-empty serve_groups")
+            if peers_tuple:
+                raise ValueError("relay role must not have peers")
+            if self.e2e_key is not None:
+                raise ValueError("relay role must not have e2e_key")
+            if self.relay is not None:
+                raise ValueError("relay role must not have relay")
 
         _validate_positive_float(self.heartbeat, "heartbeat")
         if isinstance(self.missed_pongs, bool) or not isinstance(self.missed_pongs, int) or self.missed_pongs < 1:
@@ -145,4 +235,5 @@ class MeshConfig:
             perm=self.perm,
             temp_rank=self.temp_rank,
             will_hub=self.will_hub,
+            group_id=self.group_id,
         )
