@@ -269,8 +269,11 @@ mDNS/Bonjour-style names are also out of scope; this is a small authenticated UD
 beacon, not a naming service. Discovery is unencrypted metadata: anyone on the same
 L2 sees the group id, device id and WebSocket port, but cannot read or forge a valid
 beacon without the group token, and replay is limited to the 30 s timestamp window.
-Every 5 s each member sends a few small broadcast/multicast datagrams; on a large
-noisy network this is a small but non-zero broadcast load.
+Within that window a captured beacon can be replayed from another source IP and move
+an already-known peer's address (a redirect/DoS), though the attacker still cannot
+complete the authenticated WebSocket handshake without the token. Every 5 s each
+member sends a few small broadcast/multicast datagrams; on a large noisy network this
+is a small but non-zero broadcast load.
 
 ## Two-terminal smoke test
 

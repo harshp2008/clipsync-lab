@@ -957,7 +957,9 @@ no exploratory failure was papered over.
   without the group token (HMAC-SHA256), and a **wrong-group or wrong-mac** datagram is
   ignored and counted. A replayed beacon is accepted at most 30 s after its timestamp
   and can only move an already-known peer's address; it cannot add a device, change a
-  rank, roster membership or the hub.
+  rank, roster membership or the hub. The source IP is not mac-protected, so a
+  replayer on the same L2 can redirect that peer to itself for the window (DoS); it
+  still cannot complete the token-authenticated WebSocket handshake.
 - Discovery is **off by default** and member-only; a relay never runs it.
 - **Broadcast storms:** each member sends a few small datagrams every 5 s; multicast
   TTL is 1, so it stays on the L2 segment. This is small but non-zero broadcast load on

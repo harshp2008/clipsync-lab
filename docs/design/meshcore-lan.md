@@ -276,7 +276,9 @@ only. `meshcore` still never imports `clipsync`. No new dependency is added to
   join the address book; wrong-group and bad-mac beacons are ignored and counted.
 - **Replay.** A captured beacon can be replayed for at most 30 s (`|now - ts| <= 30`)
   and only to move an already-known peer's address; it cannot add devices, change
-  ranks or change the hub.
+  ranks or change the hub. The source IP is not covered by the mac, so a replayer on
+  the same L2 can point that peer at itself for the window (redirect/DoS); it still
+  cannot complete the authenticated WebSocket handshake without the group token.
 - **Broadcast load.** Every member sends a few small datagrams every 5 s to the
   broadcast address(es) and one multicast group. On a large/noisy network that is a
   small but non-zero broadcast load. The beacon is not routed beyond the L2 segment
