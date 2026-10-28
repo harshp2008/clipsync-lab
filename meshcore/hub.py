@@ -7,6 +7,7 @@ import contextlib
 import hmac
 from http import HTTPStatus
 import json
+import logging
 import threading
 from typing import Any, Callable
 
@@ -25,6 +26,12 @@ from meshcore.messages import (
 )
 
 RELAY_MAX_FRAME_BYTES: int = DEFAULT_MAX_FRAME_BYTES
+
+# Every election liveness probe opens and closes a short-lived TCP connection;
+# its aborted HTTP/WebSocket handshake makes websockets log INFO chatter
+# ("connection failed (400 Bad Request)", "connection closed") that floods
+# daemon logs and pytest's capture stream. Keep WARNING and above only.
+logging.getLogger("websockets.server").setLevel(logging.WARNING)
 
 __all__ = [
     "DEFAULT_MAX_FRAME_BYTES",
@@ -145,24 +152,30 @@ class HubServer:
                 raise err
             raise OSError(str(err)) from err
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 5.0) -> None:
         """Stop the server, disconnect clients, release port, and join thread.
 
-        Idempotent.
+        Idempotent. Waits at most ``timeout`` seconds for the loop thread to
+        exit; a timed-out thread keeps its reference so a later ``stop()`` can
+        retry instead of blocking forever.
         """
         with self._lock:
             if not self._running and self._thread is None:
                 return
             self._running = False
-
             loop = self._loop
-            if loop is not None and loop.is_running():
+            thread = self._thread
+
+        if loop is not None and loop.is_running():
+            with contextlib.suppress(RuntimeError):
                 loop.call_soon_threadsafe(self._signal_stop)
 
-            thread = self._thread
-            if thread is not None and thread.is_alive():
-                thread.join()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout)
 
+        with self._lock:
+            if thread is not None and thread.is_alive():
+                return
             self._thread = None
             self._loop = None
             self._server = None

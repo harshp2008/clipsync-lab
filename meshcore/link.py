@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import socket
 import threading
+import urllib.parse
 from typing import Any, Callable
 
 import websockets
@@ -25,6 +27,7 @@ from meshcore.messages import (
 __all__ = [
     "Link",
     "LinkError",
+    "probe_hub",
     "relay_url",
 ]
 
@@ -36,6 +39,30 @@ class LinkError(Exception):
 def relay_url(port: int, host: str = "127.0.0.1") -> str:
     """Return the WebSocket URL for the given host and port."""
     return f"ws://{host}:{port}/"
+
+
+def probe_hub(url: str, token: str, timeout: float) -> bool:
+    """Return True when the hub's port accepts a connection within ``timeout``.
+
+    The probe is deliberately a bare TCP connect: a WebSocket (or even HTTP)
+    request makes the hub's event loop do work on every election round, which
+    shifts the existing election/link timings. The failed-handshake log it
+    causes is suppressed at the source by ``meshcore.hub`` (the
+    ``websockets.server`` logger is raised to WARNING). Kept here so the probe
+    has one named seam and its timeout is easy to test.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        return True
+    except Exception:
+        return False
+    finally:
+        sock.close()
 
 
 def _coerce_frame(frame: Any) -> bytes:

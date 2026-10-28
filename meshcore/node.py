@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import logging
-import socket
 import threading
 import time
 from typing import Any, Callable
-import urllib.parse
 
 from meshcore.config import MeshConfig, PeerConfig, format_ws_url
 from meshcore.coordination import order
 from meshcore.election import Election
 from meshcore.hub import HubServer
-from meshcore.link import Link, LinkError
+from meshcore.link import Link, LinkError, probe_hub
 from meshcore.messages import Hello
 
 __all__ = ["Node", "NodeError"]
@@ -23,19 +21,6 @@ logger = logging.getLogger("meshcore.node")
 
 class NodeError(Exception):
     """Exception raised for node operations when no route exists or link fails."""
-
-
-def _parse_host_port(address: str) -> tuple[str, int]:
-    addr = address.strip()
-    if addr.startswith("ws://") or addr.startswith("wss://"):
-        parsed = urllib.parse.urlsplit(addr)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 80
-        return host, port
-    else:
-        host, sep, port_str = addr.partition(":")
-        port = int(port_str.split("/")[0])
-        return host, port
 
 
 class Node:
@@ -225,19 +210,11 @@ class Node:
             return False
 
         try:
-            host, port = _parse_host_port(peer.address)
-        except Exception:
+            url = format_ws_url(peer.address)
+        except ValueError:
             return False
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        try:
-            sock.connect((host, port))
-            return True
-        except Exception:
-            return False
-        finally:
-            sock.close()
+        return probe_hub(url, self._config.token, timeout)
 
     def _handle_hub_changed(self, new_hub: str) -> None:
         old_hub = self._current_hub
