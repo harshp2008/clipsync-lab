@@ -481,7 +481,7 @@ def test_a5_handback_after_debounce_and_flap_without_migration(
 
 
 def test_a6_will_hub_false_is_skipped_and_all_false_forces_a_hub(
-    cluster_cleanup, caplog
+    cluster_cleanup,
 ) -> None:
     cluster = build_cluster(
         [
@@ -495,28 +495,48 @@ def test_a6_will_hub_false_is_skipped_and_all_false_forces_a_hub(
     n0, n1, n2 = cluster.nodes
     assert wait_until(lambda: all(n.hub_id == "n0" for n in cluster.nodes))
 
-    caplog.set_level(logging.WARNING)
-    n0.stop()
-    assert wait_until(lambda: n2.hub_id == "n2", timeout=8.0), [
-        n.hub_id for n in cluster.nodes
-    ]
-    assert n1.hub_id == "n2"
-    assert not n1.is_hub
-    assert "n1" not in n1.hub_events()
+    # Attach a handler directly to the meshcore logger instead of using caplog.
+    # Third-party pytest plugins (ROS's launch_testing) set the global logger
+    # class to launch.logging.LaunchLogger, which forces propagate=False on new
+    # loggers, so their records never reach caplog's root handler. The contract
+    # below is unchanged: a WARNING containing "forced" and the device id.
+    records: list[logging.LogRecord] = []
 
-    # Nobody willing is left: the first reachable device is forced and warns.
-    n2.stop()
-    assert wait_until(lambda: n1.hub_id == "n1", timeout=8.0), [
-        n.hub_id for n in cluster.nodes
-    ]
-    assert n1.is_hub
+    class _ListHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    election_logger = logging.getLogger("meshcore.election")
+    handler = _ListHandler()
+    previous_level = election_logger.level
+    election_logger.addHandler(handler)
+    election_logger.setLevel(logging.WARNING)
+    try:
+        n0.stop()
+        assert wait_until(lambda: n2.hub_id == "n2", timeout=8.0), [
+            n.hub_id for n in cluster.nodes
+        ]
+        assert n1.hub_id == "n2"
+        assert not n1.is_hub
+        assert "n1" not in n1.hub_events()
+
+        # Nobody willing is left: the first reachable device is forced and warns.
+        n2.stop()
+        assert wait_until(lambda: n1.hub_id == "n1", timeout=8.0), [
+            n.hub_id for n in cluster.nodes
+        ]
+        assert n1.is_hub
+    finally:
+        election_logger.removeHandler(handler)
+        election_logger.setLevel(previous_level)
+
     forced = [
         record.getMessage()
-        for record in caplog.records
+        for record in records
         if record.levelno >= logging.WARNING
         and "forced" in record.getMessage().lower()
     ]
-    assert forced, [record.getMessage() for record in caplog.records]
+    assert forced, [record.getMessage() for record in records]
     assert any("n1" in message for message in forced)
 
 
