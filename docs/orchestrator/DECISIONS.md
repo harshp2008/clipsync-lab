@@ -545,3 +545,54 @@ contract (all reversible, inside the repo, and the smaller option):
 in D45 came from websockets INFO records emitted into pytest's capture stream during
 suspension; suppressing the records before they reach a handler removes it without
 changing production logging or any assertion. G7 pins it in a subprocess.
+
+## D48 — One agy job, two odd stops, then takeover for the last two modules (2026-10-29)
+Job `14186961-f528-4fdb-8cfd-39c8ec800e73` (the one GATED job) ran for ~15 min in
+three model turns and made 7 commits. It implemented `meshcore/config.py`,
+`messages.py`, `hub.py`, `election.py`, `crypto.py`, `node.py` and the `websockets`
+dependency. Each turn ended in `needs_review` with `verify.reason =
+invalid_commit_message`: the wrapper added an `agy: checkpoint <timestamp>` commit
+when the turn ended and its verifier rejected that subject, so verify never ran; this
+happened twice even after a resume explicitly asking for normal subjects. Per the
+"odd state" rule I did not start a second job: I checked the gate
+(`git diff 3ed5a90 -- tests/` empty), read the whole diff, merged the branch at
+`59972c1`, and took over the two remaining modules (`clipsync/config.py`,
+`clipsync/daemon.py`) myself. I also fixed a real lifecycle issue found by the first
+full-suite run: websockets can leave a `close_connection` task pending when a server
+loop stops, which asyncio then reports as "Task was destroyed but it is pending" and a
+`Logging error`; `HubServer`/`Link` now cancel and drain pending loop tasks before
+closing the loop. That is a production lifecycle fix, not a logger-level mask.
+
+## D49 — Groups gate (2026-10-29)
+Branch `integration/groups`, never merged into `main`.
+
+- Frozen-test gate: `git diff 3ed5a9050d660afd01902df5cd2cdb3bdda39b63 -- tests/`
+  is empty (the only test files added are `tests/acceptance/test_meshcore_groups.py`
+  and `tests/conftest.py`, both in the contract commit).
+- `tests/acceptance/test_meshcore_groups.py`: **20/20 runs, 12 passed each**, no
+  `Logging error`, no `Task was destroyed` (17–18 s per run).
+- Full suite, clean shell (`env -u PYTHONPATH`): **5/5 runs, 289 passed**, no noise.
+- Full suite with the ROS PYTHONPATH from the request: **5/5 runs, 289 passed**, no
+  noise.
+- Baseline was 277; the new frozen file adds 12 tests. Existing tests pass unchanged.
+
+## D50 — Decisions taken during the takeover (2026-10-29)
+- **`uses_meshcore()` includes `relay is not None`.** A member with a preferred relay
+  but no peers is still a meshcore node (if the relay is unreachable, its fallback
+  election is itself). The contract was corrected to match after the agy job, which
+  had the narrower `bool(peers) or role == "relay"`.
+- **Relay top-level `token` stays required** by the existing schema (a relay ignores
+  it and uses the per-group tokens). This keeps every old config valid and avoided
+  making `DaemonConfig.token` optional.
+- **Relay role is exempt from the E2E-key start check** (it has no key by design);
+  members, their peers and their relay address are not. The relay still cannot
+  decrypt: it never gets a key and only forwards opaque bytes.
+- **Member + `serve_groups` is a config error**; multi-group service is the
+  relay-only role. This keeps a member's own receive path from seeing another
+  group's ciphertext.
+- The preferred relay id is `RelayConfig.device_id` (default `"relay"`), synthetic,
+  never in a roster, and validated not to collide with the node/peer ids.
+- The relay daemon path in `clipsync.main` starts the Node and waits on the stop
+  event; `--once` starts/stops and returns 0. It never builds a clipboard or codec.
+  In mesh mode `codec=None` (meshcore owns encryption); the legacy single-relay path
+  keeps the clipsync codec, so no double encryption.

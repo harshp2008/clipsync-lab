@@ -145,3 +145,51 @@ Layout (same repo for now): `meshcore/` (coordination.py, messages.py, later tra
 ## 14. Known limitations
 
 Intermediate state is lost while a device is offline (current value only). Clock skew is reduced by the HLC, not eliminated. A hub change means clients reconnect (about 30 s degraded). Event log is lost on hub change. State channels are last-writer-wins, so they are not for concurrent text editing or counters. Revocation is manual key rotation. Built for a handful of devices.
+
+## 15. Groups (implemented in phase 2a / `groups`)
+
+A **group** is `(group_id, token, e2e_key)`: a family, flat, or any independent set of
+devices. One hub (typically a TV box acting as a relay-only daemon) can serve several
+groups at once. This is the implemented isolation model; the rest of this document
+still applies inside a group.
+
+1. **Group id.** `group_id` (default `"default"`) is in every hello, the roster and
+   the config. A node belongs to exactly one group. Old configs and old clients have
+   no `group_id` and land in `"default"` with the existing token, so single-group
+   behaviour is unchanged.
+2. **Hub side.** The hub config has `serve_groups = [{id, token}, ...]` — ids and
+   tokens only, never keys. A client authenticates with its token and claims its
+   `group_id` in the hello; the hub maps `token -> group` and rejects a client whose
+   claimed group does not match its token. Per group the hub keeps its own client
+   set, roster and forwarding: frames are delivered only inside the sender's group,
+   and rosters list only that group's members.
+3. **Election is per group**, among that group's members (each node's `peers` already
+   lists only its own group). One group's hub dying cannot affect another group.
+4. **Relay-only role.** `role = "relay"` runs a hub for its `serve_groups`, is not a
+   member of any group, is never elected, has no E2E key and never decrypts. Members
+   may set `relay = {address}` as a preferred hub. Hub choice is: the preferred relay
+   if reachable, otherwise the normal election among members; when the relay returns,
+   the existing 30 s debounce hands the hub role back to it. A member without `relay`
+   behaves exactly as before.
+5. **End-to-end encryption.** Each group has its own Fernet key, configured on
+   members as `e2e_key` / `e2e_key_file`; it is never given to the hub. The node
+   encrypts on publish and decrypts on receive; a frame encrypted with a different
+   key is dropped and counted (`dropped_undecryptable`), never delivered. A key is
+   required whenever a member binds to a non-loopback address or any peer/relay
+   address is non-loopback: the node refuses to start with a clear error unless
+   `allow_insecure = true`, which logs a WARNING. Loopback with no key still works
+   (development and the existing tests). On meshcore, meshcore's layer is the only
+   encryption layer; the clipsync daemon passes no codec in mesh mode. The legacy
+   single-relay path keeps using `clipsync`'s codec, so payloads are not double
+   encrypted.
+
+**Trust model.** A group is the account; there are no passwords or user accounts.
+The hub operator (and the relay host) never sees plaintext: they see group ids,
+device ids, roster membership, frame sizes/timing and ciphertext. The token is a
+group secret and still crosses `ws://` in cleartext without TLS; prefer a tailnet or
+a trusted LAN, and rotate the token + key if the network is untrusted. Removing a
+device from the roster does not revoke its key — rotate the group key manually.
+
+**Out of scope now:** a device in two groups, cross-group sharing/forwarding, and a
+panel. A later panel may show only the group the operator authenticated for (it must
+never join rosters across groups).

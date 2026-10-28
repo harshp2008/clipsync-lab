@@ -98,6 +98,92 @@ Or run the continuous laptop daemon:
 clipsync --config ~/.config/clipsync/config.toml
 ```
 
+## Two groups on one TV box
+
+One relay-only daemon can serve several independent groups from the same process. A
+group is `(group_id, token, e2e_key)`; the TV box gets only the ids and tokens, never
+the keys. Your devices sync only with their own group, and your mother's only with
+hers. The normal single-group Quickstart above is unchanged.
+
+> Use a private tailnet or a trusted LAN for these addresses. The tokens still cross
+> `ws://` in cleartext because TLS is not implemented yet; the E2E keys stay on the
+> member devices. Never put a real token or key in git or a screenshot.
+
+### 1. Generate one Fernet key per group (on a member, not the TV box)
+
+```bash
+mkdir -p ~/.config/clipsync
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
+  > ~/.config/clipsync/family-a.key
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
+  > ~/.config/clipsync/family-b.key
+chmod 600 ~/.config/clipsync/family-*.key
+```
+
+Also generate two long random tokens (one per group), for example with
+`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`. The TV box and the
+members of that group share the same token.
+
+### 2. Relay-only config on the TV box (`relay.toml`)
+
+```toml
+device_id = "tvbox"
+role = "relay"
+bind = "<tvbox-tailnet-or-lan-ip>"
+port = 8765
+
+# The schema still requires a top-level token; a relay ignores it and uses the
+# per-group tokens below. These entries are ids + tokens only, never keys.
+token = "not-used-by-the-relay"
+
+[[serve_groups]]
+id = "family-a"
+token = "<random-token-a>"
+
+[[serve_groups]]
+id = "family-b"
+token = "<random-token-b>"
+```
+
+Start it with `clipsync --config relay.toml`. It listens once for both groups, never
+appears in either roster, is never elected, has no E2E key and forwards only opaque
+ciphertext within each group.
+
+### 3. Member config (`laptop-a.toml`, one per device)
+
+```toml
+device_id = "laptop-a"
+name = "Laptop A"
+group_id = "family-a"
+token = "<random-token-a>"
+e2e_key_file = "family-a.key"
+bind = "<laptop-a-tailnet-or-lan-ip>"
+port = 8766
+
+# Preferred hub: the TV box relay. If it is unreachable, the members elect a hub
+# among themselves (the peers below), and hand back after the debounce when it
+# returns.
+[relay]
+address = "ws://<tvbox-tailnet-or-lan-ip>:8765/"
+
+[[peers]]
+device_id = "phone-a"
+name = "Phone A"
+address = "<phone-a-tailnet-or-lan-ip>:8766"
+```
+
+The second family uses a separate file with `group_id = "family-b"`, its own token,
+its own `family-b.key`, and its own `peers`; both families may point at the same TV
+box address. Every member needs the group key whenever any address is non-loopback,
+so the daemon refuses to start if `e2e_key` is missing (use `allow_insecure = true`
+only for a deliberate test, which logs a WARNING).
+
+What the operator can and cannot see: the TV box (and anyone who can read its config)
+sees group ids, device ids and roster membership, frame sizes/timing and ciphertext.
+It cannot read or forge clipboard plaintext without the group key. A device in two
+groups and cross-group sharing are out of scope; a group is the account, with no
+passwords.
+
 ## Two-terminal smoke test
 
 With `clipsync-relay` already running in the background, you can verify sync between the daemon and `clipsync-peer` across two terminals.

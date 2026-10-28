@@ -296,7 +296,9 @@ Validation mirrors `MeshConfig`: member + `serve_groups` is an error, relay need
 stays required (old schema); a relay ignores its value and uses the per-group tokens.
 
 `DaemonConfig.to_mesh_config()` passes the new fields through.
-`DaemonConfig.uses_meshcore()` returns `bool(self.peers) or self.role == "relay"`.
+`DaemonConfig.uses_meshcore()` returns `bool(self.peers) or self.role == "relay" or
+self.relay is not None` (a member with a preferred relay but no peers is still a mesh
+node; if the relay is unreachable its fallback election is just itself).
 
 `clipsync/daemon.py`:
 
