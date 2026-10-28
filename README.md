@@ -3,9 +3,11 @@
 Investigation + prototype for reliable **two-way clipboard sync (text and images)**
 between an Ubuntu GNOME **Wayland** laptop and an **Android** phone.
 
-Status: research complete; laptop-side app complete (resilient daemon, relay command,
-config, peer tool, tests). The phone-side steps are documented but **untested** (no
-phone access in this run); anything needing an account, the phone, or system changes is in
+Status: research complete; laptop-side app complete (resilient daemon, relay role,
+config, peer tool, 300 tests) and the packaged thing has been run as real daemon
+processes outside pytest (relay + two members on loopback). The phone side and any
+TV box are **not** implemented; deployment for the laptop is documented below. Items
+needing an account, the phone, or system changes are in
 [`docs/orchestrator/NEEDS_HUMAN.md`](docs/orchestrator/NEEDS_HUMAN.md).
 
 ## What is here
@@ -16,173 +18,137 @@ phone access in this run); anything needing an account, the phone, or system cha
 | [`docs/research/agy-options-landscape.md`](docs/research/agy-options-landscape.md) | Raw agy survey (kept for provenance; reviewer corrections at the top). |
 | [`docs/design/interfaces.md`](docs/design/interfaces.md) | Frozen module contracts that let separately-owned chunks fit together. |
 | `clipsync/protocol.py` | Wire format, strict validation of untrusted frames, content hashing. |
-| `clipsync/clipboard.py` | Backend interface, `FakeClipboard`, `WlClipboardBackend` (never executed here). |
+| `clipsync/clipboard.py` | Backend interface, `FakeClipboard`, `WlClipboardBackend` (the default, never executed in tests), and the opt-in `FileClipboardBackend` (headless/test only). |
 | `clipsync/transport.py` | `InMemoryTransport` + `FileTransport` fakes carrying opaque byte frames. |
 | `clipsync/crypto.py` | Optional Fernet E2E codec + scrypt key derivation. |
 | `clipsync/engine.py` | Two-way loop: echo prevention, dedup, ordering, reconnect/outbox. |
 | `clipsync/relay_server.py` / `relay_transport.py` | Loopback-only WebSocket relay and its synchronous client transport. |
-| `clipsync/config.py` | TOML config loader for the daemon; token/E2E key may come from files. |
-| `clipsync/daemon.py` | `ClipboardDaemon` loop and the `clipsync` console command. |
-| `clipsync/relay_cli.py` | `clipsync-relay` console command. |
-| `clipsync/peer.py` | `clipsync-peer` console command: second device on the relay (`send-text`, `send-image`, `listen`). |
+| `clipsync/config.py` | TOML config loader for the daemon; token/E2E key may come from files, groups/relay/peers/discovery/tuning, and the opt-in `file` clipboard. |
+| `clipsync/daemon.py` | `ClipboardDaemon` loop and the `clipsync` console command/`python -m clipsync.daemon` entry point. |
+| `clipsync/relay_cli.py` | `clipsync-relay` console command (legacy single-relay server). |
+| `clipsync/peer.py` | `clipsync-peer` console command: second device on the legacy relay (`send-text`, `send-image`, `listen`). |
+| `examples/` | Commented configs that load through the real loader: relay, laptop member, phone placeholder, and the two-groups note. |
+| `scripts/gen_secrets.py` | Prints a fresh group token + Fernet key; `--write FILE` is 0600 and never overwrites. |
+| `scripts/smoke_two_processes.py` | Headless real-process smoke: relay + two members, file clipboard, loopback, failover check. Stdlib only. |
+| `deploy/` | systemd units (written, not installed) and install notes. |
 | [`docs/android-side.md`](docs/android-side.md) | Exact phone steps (UNTESTED). |
 | [`docs/orchestrator/`](docs/orchestrator/) | Plan, decisions, needs-human, final report. |
 
-## Quickstart
+## Run it for real (laptop)
 
-`clipsync` is the laptop daemon that wires a clipboard backend to the relay,
-`clipsync-relay` is the loopback-only relay server, and `clipsync-peer` is a second
-device on the relay (send text/images, or listen and save received images). From the
-repo root, install the console commands once (the runtime dependency is already in
-`pyproject.toml`):
+This is the supported laptop-first path. `clipsync` is the daemon; `role = "relay"`
+makes the same command a relay. You do not need to install anything: every command
+below also works as `python3 -m ...` from the repo root. If you prefer console
+scripts, `python3 -m pip install --user -e .` provides `clipsync`, `clipsync-relay`
+and `clipsync-peer`.
+
+> **Security:** the shared group token and the E2E key must stay out of git. Keep
+> them in `~/.config/clipsync/` with `chmod 600`. The relay gets each group's token
+> only, never the E2E key. Tokens cross `ws://` in cleartext (TLS is not implemented),
+> so bind the relay to loopback or a private tailnet/trusted LAN only.
+
+### 1. Generate secrets
+
+`scripts/gen_secrets.py` prints a fresh token (43 chars) and a fresh Fernet key.
+Nothing is written by default:
 
 ```bash
-python3 -m pip install --user -e .
+python3 scripts/gen_secrets.py
+# or write one 0600 note per group and copy the values from it:
+mkdir -p ~/.config/clipsync
+python3 scripts/gen_secrets.py --write ~/.config/clipsync/family-a.secrets
 ```
 
-Without installing, the same commands work as `python3 -m clipsync.daemon ...`,
-`python3 -m clipsync.relay_cli ...` and `python3 -m clipsync.peer ...`.
+The relay config needs the **token** only; each member of that group needs the same
+**token** and the **e2e_key**.
 
-> **Security:** the shared bearer token and the optional E2E key must stay out of git.
-> Keep them in `~/.config/clipsync/` with `chmod 600`; never commit or screenshot them.
-
-### 1. Start the loopback relay
-
-Start `clipsync-relay` on loopback (default port 8765):
+### 2. Edit the configs
 
 ```bash
 mkdir -p ~/.config/clipsync
-# Long random token, kept out of git
-python3 -c "import secrets; print(secrets.token_urlsafe(32))" > ~/.config/clipsync/token.txt
-chmod 600 ~/.config/clipsync/token.txt
-
-# Run the loopback-only relay (port 0 picks an ephemeral port)
-clipsync-relay --token-file ~/.config/clipsync/token.txt --port 8765
+cp examples/relay.toml examples/member-laptop.toml ~/.config/clipsync/
 ```
 
-### 2. Configure the daemon
+Replace every `CHANGE-ME-...` value. The relay token inside `[[serve_groups]]` must
+equal the member's `token`; the member's `e2e_key` is never copied to the relay.
+`relay.address` is the relay's `host:port`; `[[peers]]` lists the other devices in
+the same group. See `examples/two-groups-on-one-box.md` for your group vs your mom's.
+The daemon refuses to start while any placeholder remains (`Configuration error:
+... CHANGE-ME ... generate real secrets with scripts/gen_secrets.py ...`).
 
-Create `~/.config/clipsync/config.toml`:
+Useful fields: `group_id`, `token`/`token_file`, `e2e_key`/`e2e_key_file`, `[relay]`
+(one preferred hub), `[[peers]]` (+ optional `addresses`), `discovery` (off by
+default), `bind`/`port`, `state_dir`, `allow_insecure` (loopback/private tests only),
+and the optional mesh tuning `heartbeat`/`missed_pongs`/`probe_timeout`/`debounce`
+(defaults 10/3/2/30; lower values fail over sooner).
+
+### 3. Start the relay
+
+```bash
+python3 -m clipsync.daemon --config ~/.config/clipsync/relay.toml
+# with the installed console script: clipsync --config ...
+```
+
+It serves both `[[serve_groups]]` and never appears in either roster. Keep
+`bind = "127.0.0.1"` for the laptop-only run; for a second machine use its private
+tailnet/LAN address.
+
+### 4. Start the member (laptop)
+
+```bash
+python3 -m clipsync.daemon --config ~/.config/clipsync/member-laptop.toml
+```
+
+The default clipboard backend is Wayland (`wl-paste`/`wl-copy`). Copy text as usual;
+it syncs to the other members of the group. A headless machine has no real clipboard;
+use the file backend described next only for tests.
+
+### 5. Prove it without touching your clipboard
+
+```bash
+python3 scripts/smoke_two_processes.py
+```
+
+Stdlib only, about 2 s, exit code 0 = PASS. It starts three real daemon processes
+from generated TOML files (one relay, two members), picks free loopback ports by
+binding port 0, uses the `file` clipboard backend (a text file per member), waits for
+text to arrive in the second member's file, kills the relay, waits for the members to
+elect a hub, and confirms sync still works. It prints a short timeline, child logs on
+failure, and terminates every process (SIGTERM then SIGKILL) even on failure.
+
+The `file` backend is test/headless only and is never the default:
 
 ```toml
-device_id = "laptop"
-relay_url = "ws://127.0.0.1:8765/"
-token_file = "token.txt"
-# Optional end-to-end encryption: same key on every peer, never committed.
-# e2e_key_file = "e2e.key"
-poll_interval = 0.5
+clipboard_backend = "file"   # opt-in; requires the next line
+clipboard_file = "/tmp/clipsync-test.txt"
 ```
 
-To enable E2E, generate a Fernet key and point the config at it:
+### 6. Optional: run it under systemd
 
-```bash
-python3 -c "from clipsync.crypto import FernetCodec; print(FernetCodec.generate().key.decode())" \
-  > ~/.config/clipsync/e2e.key
-chmod 600 ~/.config/clipsync/e2e.key
-```
+`deploy/clipsync-relay.service` (system unit, dedicated `clipsync` user) and
+`deploy/clipsync-member.service` (user unit) are provided **but not installed**.
+See [`deploy/README.md`](deploy/README.md). This run did not run `systemctl`.
 
-Relative `token_file` / `e2e_key_file` paths resolve against the directory containing
-`config.toml`.
+### Two groups, one relay
 
-### 3. Run the daemon
+One relay process can serve your group and your mom's at the same time; each group
+has its own id, token, E2E key and peers, and the relay sees only ids/tokens/ciphertext.
+The walkthrough is in
+[`examples/two-groups-on-one-box.md`](examples/two-groups-on-one-box.md).
 
-Run a one-shot sync to test connectivity and output JSON statistics:
+## TV box (later)
 
-```bash
-clipsync --config ~/.config/clipsync/config.toml --once
-```
+**No TV box work was done in this run: its operating system is unknown.** Before
+writing a unit, package or OS-specific path for it, collect:
 
-Or run the continuous laptop daemon:
+- `uname -a` and `uname -m` (kernel + architecture);
+- `python3 --version` (or whether `python3` exists at all);
+- `ps -p 1 -o comm=` and `systemctl --version` (does it run systemd?);
+- how it installs/updates software (distro/package manager) and whether it is always on;
+- whether it can join the same private tailnet/LAN as the laptop.
 
-```bash
-clipsync --config ~/.config/clipsync/config.toml
-```
-
-## Two groups on one TV box
-
-One relay-only daemon can serve several independent groups from the same process. A
-group is `(group_id, token, e2e_key)`; the TV box gets only the ids and tokens, never
-the keys. Your devices sync only with their own group, and your mother's only with
-hers. The normal single-group Quickstart above is unchanged.
-
-> Use a private tailnet or a trusted LAN for these addresses. The tokens still cross
-> `ws://` in cleartext because TLS is not implemented yet; the E2E keys stay on the
-> member devices. Never put a real token or key in git or a screenshot.
-
-### 1. Generate one Fernet key per group (on a member, not the TV box)
-
-```bash
-mkdir -p ~/.config/clipsync
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
-  > ~/.config/clipsync/family-a.key
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
-  > ~/.config/clipsync/family-b.key
-chmod 600 ~/.config/clipsync/family-*.key
-```
-
-Also generate two long random tokens (one per group), for example with
-`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`. The TV box and the
-members of that group share the same token.
-
-### 2. Relay-only config on the TV box (`relay.toml`)
-
-```toml
-device_id = "tvbox"
-role = "relay"
-bind = "<tvbox-tailnet-or-lan-ip>"
-port = 8765
-
-# The schema still requires a top-level token; a relay ignores it and uses the
-# per-group tokens below. These entries are ids + tokens only, never keys.
-token = "not-used-by-the-relay"
-
-[[serve_groups]]
-id = "family-a"
-token = "<random-token-a>"
-
-[[serve_groups]]
-id = "family-b"
-token = "<random-token-b>"
-```
-
-Start it with `clipsync --config relay.toml`. It listens once for both groups, never
-appears in either roster, is never elected, has no E2E key and forwards only opaque
-ciphertext within each group.
-
-### 3. Member config (`laptop-a.toml`, one per device)
-
-```toml
-device_id = "laptop-a"
-name = "Laptop A"
-group_id = "family-a"
-token = "<random-token-a>"
-e2e_key_file = "family-a.key"
-bind = "<laptop-a-tailnet-or-lan-ip>"
-port = 8766
-
-# Preferred hub: the TV box relay. If it is unreachable, the members elect a hub
-# among themselves (the peers below), and hand back after the debounce when it
-# returns.
-[relay]
-address = "ws://<tvbox-tailnet-or-lan-ip>:8765/"
-
-[[peers]]
-device_id = "phone-a"
-name = "Phone A"
-address = "<phone-a-tailnet-or-lan-ip>:8766"
-```
-
-The second family uses a separate file with `group_id = "family-b"`, its own token,
-its own `family-b.key`, and its own `peers`; both families may point at the same TV
-box address. Every member needs the group key whenever any address is non-loopback,
-so the daemon refuses to start if `e2e_key` is missing (use `allow_insecure = true`
-only for a deliberate test, which logs a WARNING).
-
-What the operator can and cannot see: the TV box (and anyone who can read its config)
-sees group ids, device ids and roster membership, frame sizes/timing and ciphertext.
-It cannot read or forge clipboard plaintext without the group key. A device in two
-groups and cross-group sharing are out of scope; a group is the account, with no
-passwords.
+Until then the relay can run on the laptop (or any Linux box with Python 3.11+ and
+systemd) with `deploy/clipsync-relay.service`; no TV-specific file is shipped.
 
 ## Testing without internet
 
@@ -275,43 +241,66 @@ complete the authenticated WebSocket handshake without the token. Every 5 s each
 member sends a few small broadcast/multicast datagrams; on a large noisy network this
 is a small but non-zero broadcast load.
 
-## Two-terminal smoke test
+## Manual real-clipboard check (owner-only)
 
-With `clipsync-relay` already running in the background, you can verify sync between the daemon and `clipsync-peer` across two terminals.
-
-> **Warning:** This smoke test uses the real clipboard via the daemon. Run it only with non-sensitive content, or not at all if the machine is currently in use for secrets.
-
-### Terminal A (Daemon)
-
-Run the continuous daemon on the laptop:
+The automated smoke above never touches Wayland. To exercise the real clipboard, run
+the relay and the member in two terminals with the configs from step 2, then copy
+text in a scratch session:
 
 ```bash
-clipsync --config ~/.config/clipsync/config.toml
+# terminal 1: relay
+python3 -m clipsync.daemon --config ~/.config/clipsync/relay.toml
+# terminal 2: laptop member
+python3 -m clipsync.daemon --config ~/.config/clipsync/member-laptop.toml
 ```
 
-### Terminal B (Peer)
+> **Warning:** this reads and writes your real clipboard. Use non-sensitive content in
+> a scratch session, and do not run it while secrets may be copied. The GNOME/Wayland
+> caveat (background reads may fail or return stale offers) still applies.
 
-The peer acts as a second device on the relay. When sharing the same configuration file, specify a distinct `--device-id` so payloads are not dropped as self-echoes.
+A second member needs its own config with a distinct `device_id` and `port`, the same
+group token/key, and each other listed under `[[peers]]`. The phone placeholder is
+not a working client yet.
 
-1. Listen for payloads sent from the daemon and save received images:
+## Quickstart (legacy single relay)
+
+The older single-relay workflow is still supported (and still needed by
+`clipsync-peer`); the current laptop/mesh path is **"Run it for real (laptop)"**
+above. It uses the real clipboard.
 
 ```bash
-clipsync-peer --config ~/.config/clipsync/config.toml --device-id phone-test listen --output-dir ./received
+# long random token, kept out of git
+python3 -c "import secrets; print(secrets.token_urlsafe(32))" > ~/.config/clipsync/token.txt
+chmod 600 ~/.config/clipsync/token.txt
+
+# loopback-only legacy relay
+clipsync-relay --token-file ~/.config/clipsync/token.txt --port 8765
+
+# one poll, JSON statistics (legacy relay_url config)
+clipsync --config ~/.config/clipsync/config.toml --once
 ```
 
-Received images land in the output directory `./received`.
+Without installing the console scripts, use `python3 -m clipsync.relay_cli` and
+`python3 -m clipsync.daemon`.
 
-2. Send text to the daemon's clipboard:
+## Two-terminal smoke test (legacy, real clipboard)
 
-```bash
-clipsync-peer --config ~/.config/clipsync/config.toml --device-id phone-test send-text "hello from the peer"
-```
+This older manual test uses the real clipboard and the legacy `clipsync-relay` /
+`clipsync-peer` pair. Prefer the headless `scripts/smoke_two_processes.py` unless you
+specifically need to exercise the peer tool.
 
-3. Send an image to the daemon's clipboard:
+> **Warning:** this uses the real clipboard. Use non-sensitive content in a scratch
+> session, and do not run it while secrets may be copied.
 
-```bash
-clipsync-peer --config ~/.config/clipsync/config.toml --device-id phone-test send-image ./screenshot.png
-```
+1. Start the relay: `clipsync-relay --token-file ~/.config/clipsync/token.txt --port 8765`.
+2. Run the daemon: `clipsync --config ~/.config/clipsync/config.toml`.
+3. Listen with the peer (save received images):
+   `clipsync-peer --config ~/.config/clipsync/config.toml --device-id phone-test listen --output-dir ./received`
+4. Send text: `clipsync-peer --config ... --device-id phone-test send-text "hello from the peer"`.
+5. Send an image: `clipsync-peer --config ... --device-id phone-test send-image ./screenshot.png`.
+
+`--device-id` must differ from the daemon's id so payloads are not dropped as
+self-echoes.
 
 ## Run the tests
 
@@ -325,7 +314,14 @@ The suite covers protocol validation/oversized payloads, clipboard command build
 with a canned runner, crypto round-trip/tamper, transport delivery/partial lines,
 engine echo-loop/dedup/ordering/reconnect, the loopback relay, daemon backoff/
 reconnect resilience, the peer command, and the daemon/config/CLI wiring. Config/CLI
-tests use fake clipboards and a canned `CommandRunner`.
+tests use fake clipboards and a canned `CommandRunner`; nothing in the suite drives
+`wl-paste`/`wl-copy`.
+
+`tests/acceptance/test_deploy_smoke.py` adds 7 deployment tests (D1-D7): the example
+configs load and placeholders fail loudly, `gen_secrets.py` output/mode/overwrite
+behaviour, the real two-process smoke script (exit 0, under 60 s, no stray children),
+the systemd units parse and name a real entry point, the `file` backend is opt-in,
+and the previous 300 tests still collect. The full total is **307 passed**.
 
 The meshcore election probe is a real authenticated WebSocket connect followed by an
 immediate close, bounded by the configured `probe_timeout`; it does not change another
@@ -350,14 +346,19 @@ which needs its hooks).
 - Tests never read or write the real clipboard; `WlClipboardBackend` is implemented
   but only driven through canned `CommandRunner` fakes, never through `wl-paste`/
   `wl-copy`.
+- The deployment smoke starts real daemon processes but selects the opt-in `file`
+  clipboard backend by config; the default stays Wayland, and old configs never
+  select the file backend.
 - Relay/daemon tests bind loopback-only ephemeral ports; no external network calls,
   real credentials, or system changes are used.
 - `FileTransport` is a test fake; do not treat it as a production transport.
+- The systemd units under `deploy/` are written but not installed; no `systemctl`
+  command is run by this repo's tests.
 
 ## Branches
 
-`main` carries the current line: research, prototype, relay, and the laptop daemon.
-Feature work happens on `integration/*` branches (`research`, `prototype`, `relay`,
-`relay-micro`, `daemon`, `resilience`); see `docs/orchestrator/REPORT.md` for history.
-`integration/resilience` (daemon resilience + `clipsync-peer`) is **not merged yet**:
-the merge into `main` is left to the repo owner.
+`main` carries the merged line through meshcore phase 2b (LAN transport and
+discovery). Feature work happens on `integration/*` branches; the deployment work in
+this run is on `integration/deploy` (examples, secrets/smoke scripts, systemd units,
+docs) and is **not merged**: the merge into `main` is left to the repo owner. See
+`docs/orchestrator/REPORT.md` for history.

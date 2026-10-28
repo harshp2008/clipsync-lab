@@ -1,0 +1,27 @@
+# clipsync relay example -- copy to /etc/clipsync/relay.toml or
+# ~/.config/clipsync/relay.toml and replace every CHANGE-ME-... value.
+#
+# This one process serves TWO independent groups for one machine.  It gets the
+# group ids and tokens only, never the end-to-end keys.
+#
+# The top-level token is required by the schema but a relay ignores it (it
+# authenticates clients with the per-group tokens below), so this value is safe.
+token = "not-used-by-the-relay"
+device_id = "relay"
+name = "Family Relay"
+role = "relay"
+
+# Loopback is the right default for the laptop-only smoke test.  For a second
+# machine on a private tailnet or trusted LAN, replace this with that interface's
+# address.  Never expose this port to the public internet: the group tokens cross
+# ws:// in cleartext until TLS is added.
+bind = "127.0.0.1"
+port = 8765
+
+[[serve_groups]]
+id = "family-a"
+token = "CHANGE-ME-token-family-a"
+
+[[serve_groups]]
+id = "family-b"
+token = "CHANGE-ME-token-family-b"

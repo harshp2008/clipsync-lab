@@ -534,3 +534,64 @@ python3 -m pytest -q tests/acceptance/test_meshcore_exploratory.py -m explorator
   (spend **1.93 / 6.76** points).
 - 15:00 — docs updated; **`main` untouched**. Merging `integration/hub-election` into
   `main` is left to the owner (NEEDS_HUMAN H14).
+
+# clipsync-lab — deploy smoke run plan (DIRECT)
+
+Workflow: **DIRECT** — the request explicitly said no agy job (the task is small and
+agy's verify/commit wrapper has been unreliable). The frozen acceptance tests
+(`tests/acceptance/test_deploy_smoke.py`, D1-D7) were written and committed before
+implementation, then the work was done directly.
+
+Branch: `integration/deploy`, cut from `main` at `d859f63` (`main` untouched; the
+merge is the owner's decision).
+
+## Scope
+
+- Discover the real entry points, config format/fields and clipboard seam by reading
+  the code (not guessing): `clipsync`, `clipsync-relay`, `clipsync-peer` console
+  scripts plus `python -m clipsync.daemon`; TOML at `~/.config/clipsync/config.toml`
+  by default; tests use `FakeClipboard` and a canned `CommandRunner`; there was no
+  way to run a real daemon process without the Wayland clipboard.
+- Add the minimal opt-in `file` clipboard backend (`clipboard_backend = "file"` +
+  `clipboard_file`), test/headless only, default unchanged; log it in DECISIONS.
+- `examples/` (relay, laptop member, phone placeholder, two-groups note),
+  `scripts/gen_secrets.py`, `scripts/smoke_two_processes.py`, `deploy/*.service`.
+- README "Run it for real (laptop)" + "TV box (later)" placeholder; keep the
+  existing "Testing without internet" section byte-for-byte.
+- No TV box work, no real clipboard, no `systemctl`, no installs, no push.
+
+## Gate
+
+- Frozen tests first and committed (`742dda3`), then implementation.
+- 20x `tests/acceptance/test_deploy_smoke.py`, 5x full suite clean, 5x full suite
+  with the ROS PYTHONPATH, 10x `scripts/smoke_two_processes.py` by hand (report pass
+  count + median time); zero "Logging error"/"Task was destroyed"; no frozen-test
+  edits.
+
+## Status log
+
+- 03:26 — run start; branch `integration/deploy` cut from `main` (`d859f63`).
+  Baseline **300 passed** (35.4 s).
+- 03:29 — D1-D7 written and committed (`742dda3`); tests not edited afterwards.
+- 03:30–03:37 — implementation. The first real-process smoke immediately found
+  `TypeError: 'NoneType' object is not callable` in the mesh-mode daemon codec
+  setup (in-process tests never took that path); fixed. Failover needed the existing
+  mesh tuning fields exposed and a wait for the member election (D57).
+- 03:37 — implementation committed: `823ceea` (backend/config/codec fix), `7c697ca`
+  (examples + scripts), `f80311b` (units), `fb2725b` (README). New file 7 passed;
+  full suite 307 passed.
+- 03:50–04:20 — first gate iterations exposed three issues, all fixed without
+  editing a frozen test: (1) frozen README tests require the legacy `## Quickstart`
+  / `## Two-terminal smoke test` headings, so they were restored under explicit
+  legacy labels; (2) the meshcore broadcast does not queue for clients that are not
+  attached yet, so a copy at startup or in the handover window could be lost
+  (D3/D4 flake): the smoke now retries with a fresh value and prints
+  `TEXT-RETRY`/`FAILOVER-RETRY`; (3) D1 exercised `daemon.main`, whose
+  `logging.basicConfig(force=True)` detaches pytest/ROS capture handlers; logging is
+  now configured only after config validation.
+- 04:24 — **final gate PASS**: new file **20/20** (4.31–6.87 s per run); full suite
+  clean **5/5** (307 passed, 43.9–48.1 s); full suite with the ROS PYTHONPATH
+  **5/5** (307 passed, 43.5–44.6 s); zero `Logging error`/`Task was destroyed`.
+  Manual `scripts/smoke_two_processes.py`: **10/10 PASS**, median **1.98 s**
+  (1.95–2.07 s). Frozen acceptance diff `git diff 742dda3 -- tests/acceptance` is
+  empty. No leftover daemon processes or smoke temp dirs.

@@ -1,9 +1,12 @@
 """Clipboard backend abstraction.
 
-Two implementations:
+Three implementations:
 
 * :class:`FakeClipboard` -- in-memory, used by every test in this repo.
-* :class:`WlClipboardBackend` -- real Wayland (wl-clipboard) backend.
+* :class:`WlClipboardBackend` -- real Wayland (wl-clipboard) backend, the default.
+* :class:`FileClipboardBackend` -- headless/test-only text file backend, selected
+  explicitly with ``clipboard_backend = "file"`` in the daemon config.  It is never
+  selected by default and never touches the real clipboard.
 
 ``WlClipboardBackend`` is **NOT executed in this run**.  Constructing it never spawns
 a process; ``read()``/``write()`` do, and are only meant to be called by a human on a
@@ -13,8 +16,11 @@ real desktop session.  Tests exercise only the pure command builders and
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from typing import Iterable, Protocol, runtime_checkable
 
@@ -74,6 +80,75 @@ class FakeClipboard:
 
     def clear(self) -> None:
         self.payload = None
+
+
+@dataclass
+class FileClipboardBackend:
+    """Text-only clipboard backed by a plain file.  Test/headless use only.
+
+    Not the default: select it with ``clipboard_backend = "file"`` plus
+    ``clipboard_file = "/path/to/clip.txt"``.  Every ``read()`` re-reads the file,
+    so the daemon's normal poll loop is the polling mechanism.  Images are
+    rejected with :class:`ClipboardError`.
+
+    This is a production seam for running real daemon processes on a headless
+    machine (the deployment smoke test).  It never touches Wayland, ``wl-paste``
+    or ``wl-copy``, and must not be used as the user's real clipboard.
+    """
+
+    path: str | Path
+
+    def __post_init__(self) -> None:
+        self.path = Path(self.path)
+
+    def read(self) -> ClipPayload | None:
+        try:
+            raw = self.path.read_bytes()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise ClipboardError(f"cannot read clipboard file {self.path}: {exc}") from exc
+        if not raw:
+            return None
+        if len(raw) > MAX_TEXT_BYTES:
+            raise ClipboardError(
+                f"clipboard file {self.path} is {len(raw)} bytes, over the text limit"
+            )
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ClipboardError(
+                f"clipboard file {self.path} is not valid UTF-8 text: {exc}"
+            ) from exc
+        return text_payload(text, "text/plain")
+
+    def write(self, payload: ClipPayload) -> None:
+        if payload.kind != "text" or payload.text is None:
+            raise ClipboardError("file clipboard backend supports text payloads only")
+        raw = payload.text.encode("utf-8")
+        if len(raw) > MAX_TEXT_BYTES:
+            raise ClipboardError(
+                f"text payload is {len(raw)} bytes, over the text limit"
+            )
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(
+                dir=str(self.path.parent), prefix=f".{self.path.name}.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(raw)
+                os.replace(tmp_name, self.path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
+        except OSError as exc:
+            raise ClipboardError(
+                f"cannot write clipboard file {self.path}: {exc}"
+            ) from exc
 
 
 @runtime_checkable
@@ -190,6 +265,7 @@ __all__ = [
     "ClipboardError",
     "CommandRunner",
     "FakeClipboard",
+    "FileClipboardBackend",
     "SubprocessRunner",
     "WlClipboardBackend",
     "choose_mime",

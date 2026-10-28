@@ -1,0 +1,40 @@
+[Unit]
+Description=clipsync relay (serves one or more clipboard-sync groups)
+Documentation=file:/opt/clipsync/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated unprivileged system user -- create it once, this unit does not:
+#   sudo useradd --system --home-dir /var/lib/clipsync --shell /usr/sbin/nologin clipsync
+# and keep /etc/clipsync/relay.toml readable by it (root:clipsync, 0640).
+User=clipsync
+Group=clipsync
+WorkingDirectory=/opt/clipsync
+ExecStart=/usr/bin/python3 -m clipsync.daemon --config /etc/clipsync/relay.toml
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+StateDirectory=clipsync
+Restart=on-failure
+RestartSec=2s
+
+# Safe hardening for a loopback/private-network listener.  The relay needs no
+# home directory, no devices, no kernel tuning and no new privileges.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

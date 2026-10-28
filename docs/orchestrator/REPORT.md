@@ -1003,3 +1003,114 @@ git checkout main && git merge --no-ff -m "merge phase 2b: LAN transport and dis
 
 Then verify: `env -u PYTHONPATH python3 -m pytest -q` → expected **300 passed**.
 
+
+---
+
+# Deploy run — real-process laptop smoke + deployment docs (2026-10-29)
+
+**Result: PASS.** Branch `integration/deploy`, cut from `main` at `d859f63`;
+`main` untouched. Workflow **DIRECT** (no agy job), as requested.
+
+## 1. What was delivered
+
+| Deliverable | State |
+|---|---|
+| `tests/acceptance/test_deploy_smoke.py` (D1-D7) | frozen before implementation; never edited |
+| `examples/` (relay, laptop member, phone placeholder, two-groups note) | load through the real loader; placeholders fail loudly |
+| `scripts/gen_secrets.py` | prints token + Fernet key; `--write` is 0600 and refuses overwrite |
+| `scripts/smoke_two_processes.py` | real relay + two member processes, file clipboard, loopback, failover check |
+| `deploy/clipsync-relay.service`, `deploy/clipsync-member.service`, `deploy/README.md` | written, **not installed**; no `systemctl` run |
+| README "Run it for real (laptop)" + "TV box (later)" | added; "Testing without internet" byte-identical |
+| `file` clipboard backend | opt-in (`clipboard_backend = "file"` + `clipboard_file`), default unchanged |
+
+## 2. Test counts and gate evidence
+
+- Baseline on `main`: **300 passed**. Frozen deployment file adds **7** tests
+  (D1-D7), total **307 passed**.
+- New file: **20/20** clean runs.
+- Full suite, clean shell (`env -u PYTHONPATH`): **5/5**, **307 passed**
+  (43.9-48.1 s wall).
+- Full suite with the ROS PYTHONPATH from the request: **5/5**, **307 passed**
+  (43.5-44.6 s wall).
+- Zero `Logging error`, zero `Task was destroyed`.
+- Frozen check: `git diff 742dda3 -- tests/acceptance` is **empty** (no frozen test
+  was edited, so no owner approval is needed for one).
+- Manual `python3 scripts/smoke_two_processes.py`: **10/10 PASS**, median **1.98 s**
+  (range 1.95-2.07 s), no retries. No leftover daemon processes or smoke temp dirs.
+
+## 3. What the smoke showed about failover on loopback
+
+- Relay + two members start as separate `python -m clipsync.daemon` processes from
+  generated TOML; initial text reaches the second member's clipboard file in
+  ~0.2-0.3 s.
+- After the relay is SIGTERM'd, the two members elect a hub among themselves; with
+  the smoke's tuned timings (heartbeat 0.5 s, `missed_pongs` 2, probe 0.5 s,
+  debounce 0.5 s) election completes ~1.5-2 s after the kill and a new copy syncs
+  ~0.2 s later. Failover on loopback is genuine, not a relay restart.
+- **Caveat (reported, H24):** meshcore hub `broadcast` does not queue for clients
+  that have not attached yet, and the engine treats a scheduled broadcast as sent.
+  A single copy made while a member is still attaching (startup) or in the ~2 s hub
+  handover can therefore be lost. The smoke copies again with a fresh value and
+  prints `TEXT-RETRY`/`FAILOVER-RETRY`; its PASS does not claim single-copy
+  reliability for those windows.
+- **Default timing:** production defaults (10 s heartbeat × 3 missed + 30 s
+  debounce) would need ~60 s to fail over, which does not fit D3's 60 s bound. The
+  loader now exposes the existing mesh fields (`heartbeat`, `missed_pongs`,
+  `probe_timeout`, `debounce`) with unchanged defaults; the smoke tunes them.
+
+## 4. Bug found by running real processes
+
+The first smoke run crashed both members with
+`TypeError: 'NoneType' object is not callable`: `daemon.main` in mesh mode set the
+codec factory to `None` and then called it. In-process tests had only exercised the
+legacy path or injected factories. Fixed in `823ceea`. A second issue surfaced only
+under the full suite: `logging.basicConfig(force=True)` ran before config validation,
+so D1's config-error calls detached pytest/ROS logging handlers and caused an
+intermittent failure elsewhere; logging is now configured only after validation.
+
+## 5. Security notes
+
+- `examples/` contains only obvious `CHANGE-ME-...` placeholders. The example
+  `e2e_key` is a syntactically valid Fernet key made of a public placeholder string,
+  so treat it as public/compromised; `ensure_no_placeholders()` in the daemon entry
+  point refuses to start while it remains (and D1 asserts the loud failure).
+- Real secrets are generated, never committed: `gen_secrets.py` uses
+  `secrets.token_urlsafe(32)` (43 chars) and a fresh 32-byte Fernet key; `--write`
+  creates the file with mode 0600 via `O_CREAT|O_EXCL` and never overwrites.
+- The smoke generates ephemeral secrets in memory, writes them only into a temp
+  directory, deletes it, and binds loopback ports obtained from port 0.
+- The `file` clipboard backend is opt-in, text-only, and documented as test/headless
+  only; the default remains Wayland and old configs never select it. No real
+  clipboard is touched by any test or script in this run.
+- systemd: relay unit runs as a dedicated `clipsync` user with `NoNewPrivileges`,
+  `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, restricted
+  address families and namespaces; the member is a per-user unit without
+  `ProtectHome` because it needs `~/.config`. Neither unit was installed or started.
+- Existing limitation unchanged: the group token still crosses `ws://` in cleartext
+  until TLS is added; bind only loopback or a private tailnet/trusted LAN.
+
+## 6. Ambiguities and decisions
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | "Examples must actually parse" vs "examples must fail loudly on placeholders" | **Decided (D57):** loader accepts the valid-shape placeholders so D1 can load every file; `daemon.main` rejects `CHANGE-ME` with exit 2 before any node/clipboard starts. |
+| 2 | Default failover (~60 s) cannot fit D3's 60 s bound | **Decided (D57):** expose the existing mesh tuning fields with unchanged defaults; smoke uses fast values. |
+| 3 | What should `gen_secrets.py --write` contain? | **Decided:** one 0600 secret note with `token` and `e2e_key`; prints only the path and never overwrites. |
+| 4 | Single copy lost while a peer attaches / during handover | **Asked owner (H24):** smoke reports and retries; production fix is a design choice. |
+| 5 | Frozen README tests demand the old Quickstart/two-terminal headings while the task says replace stale run docs | **Decided (D58):** the new laptop path is primary; the old commands are kept under explicit "legacy" headings. No test edited. |
+| 6 | Should example member configs use the file backend? | **Decided:** no - `file` is test/headless only; the examples use the Wayland default. |
+| 7 | systemd ExecStart: installed console script or module? | **Decided:** `/usr/bin/python3 -m clipsync.daemon` (the declared `clipsync.daemon:main`), so the unit test verifies the module without installing. |
+| 8 | TV box OS/units | **Decided (per task):** no TV box work; placeholder asks for `uname -a`, Python version, systemd presence, package manager, network. |
+
+## 7. Step count
+
+About **130 agent steps** for the whole run (the harness's last time sample reported
+step 127 at 04:24; the final leftover-process check and docs commit came after).
+
+## 8. Exact merge command for the owner
+
+```bash
+git checkout main && git merge --no-ff -m "merge deploy: laptop real-process smoke, examples, units" integration/deploy
+```
+
+Then verify: `env -u PYTHONPATH python3 -m pytest -q` -> expected **307 passed**.
