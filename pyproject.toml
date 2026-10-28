@@ -23,4 +23,4 @@ packages = ["clipsync", "meshcore"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-ra"
+addopts = "-ra --import-mode=importlib"
