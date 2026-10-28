@@ -48,7 +48,7 @@ class Election:
         self._forced_logged_for: str | None = None
         self._current_hub: str | None = None
 
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
