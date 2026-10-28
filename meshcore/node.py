@@ -248,29 +248,24 @@ class Node:
         if hub is None or hub == self.device_id:
             return
 
-        with self._link_lock:
-            if self._link is not None and self._link.connected:
-                return
+        peer = self._peer_by_id.get(hub)
+        if peer is None:
+            return
 
-            if self._link is not None and not self._link.connected:
-                # If existing link URL does not match current hub, close it
-                peer = self._peer_by_id.get(hub)
-                if peer is not None and format_ws_url(peer.address) != self._link.url:
-                    self._link.close()
-                    self._link = None
-                else:
+        target_url = format_ws_url(peer.address)
+
+        with self._link_lock:
+            if self._link is not None:
+                if self._link.url == target_url:
                     return
+                self._link.close()
+                self._link = None
 
             if not self._can_reach(self.device_id, hub):
                 return
 
-            peer = self._peer_by_id.get(hub)
-            if peer is None:
-                return
-
-            url = format_ws_url(peer.address)
             link = Link(
-                url=url,
+                url=target_url,
                 token=self._config.token,
                 hello=self._config.hello(),
                 max_frame_bytes=self._config.max_frame_bytes,
