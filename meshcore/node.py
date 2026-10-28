@@ -293,7 +293,12 @@ class Node:
         with self._roster_lock:
             self._client_roster = list(new_roster)
         if self._election is not None:
-            self._election.set_devices(new_roster)
+            merged: dict[str, Any] = dict(self._peer_by_id)
+            for hello in new_roster:
+                if hello.device_id != self.device_id:
+                    merged[hello.device_id] = hello
+            merged.pop(self.device_id, None)
+            self._election.set_devices(merged.values())
 
     def _handle_client_payload(self, sender_id: str | None, payload: bytes) -> None:
         for cb in list(self._receive_callbacks):
