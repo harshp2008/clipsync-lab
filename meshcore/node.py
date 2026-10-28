@@ -60,6 +60,11 @@ class Node:
         self._hub: HubServer | None = None
         self._election: Election | None = None
         self._link: Link | None = None
+        # _desired_hub is the election result; _current_hub is the hub this node is
+        # actually attached to (its own server, or a connected client link). Keeping
+        # them apart means hub_id only moves once the new link is usable, so callers
+        # that wait for hub_id do not publish into a half-migrated cluster.
+        self._desired_hub: str | None = None
         self._current_hub: str | None = None
         self._client_roster: list[Hello] | None = None
 
@@ -79,16 +84,19 @@ class Node:
 
     @property
     def hub_id(self) -> str | None:
-        """Currently elected hub device ID, or None if not known."""
+        """The hub this node is attached to, or None while (re)connecting."""
         with self._lifecycle_lock:
-            if self._election is not None:
-                return self._election.current_hub
             return self._current_hub
 
     @property
     def is_hub(self) -> bool:
-        """Whether this node is currently acting as the elected hub."""
-        return self.hub_id == self.device_id
+        """Whether this node is the elected hub (not just a listener)."""
+        with self._lifecycle_lock:
+            return (
+                self._desired_hub == self.device_id
+                and self._hub is not None
+                and self._hub.running
+            )
 
     @property
     def connected(self) -> bool:
@@ -162,6 +170,8 @@ class Node:
 
             hub = self._hub
             self._hub = None
+            self._desired_hub = None
+            self._current_hub = None
 
         if election is not None:
             election.stop()
@@ -231,14 +241,17 @@ class Node:
 
     def _handle_hub_changed(self, new_hub: str) -> None:
         old_hub = self._current_hub
-        self._current_hub = new_hub
-        logger.info("Hub changed from %s to %s (election)", old_hub, new_hub)
+        self._desired_hub = new_hub
+        forced = self._election is not None and self._election.last_forced
+        reason = "forced: no reachable device will_hub" if forced else "election probe"
+        logger.info("Hub changed from %s to %s (%s)", old_hub, new_hub, reason)
 
         if new_hub == self.device_id:
             with self._link_lock:
                 if self._link is not None:
                     self._link.close()
                     self._link = None
+            self._current_hub = new_hub
         else:
             self._ensure_link(new_hub)
 
@@ -250,7 +263,7 @@ class Node:
                 pass
 
     def _ensure_link(self, target_hub: str | None = None) -> None:
-        hub = target_hub if target_hub is not None else self.hub_id
+        hub = target_hub if target_hub is not None else self._desired_hub
         if hub is None or hub == self.device_id:
             return
 
@@ -262,10 +275,16 @@ class Node:
 
         with self._link_lock:
             if self._link is not None:
-                if self._link.url == target_url:
+                if self._link.url != target_url:
+                    self._link.close()
+                    self._link = None
+                    self._current_hub = None
+                elif self._link.connected:
+                    self._current_hub = hub
                     return
-                self._link.close()
-                self._link = None
+                else:
+                    # Same address: the Link reconnects on its own.
+                    return
 
             if not self._can_reach(self.device_id, hub):
                 return
@@ -285,10 +304,13 @@ class Node:
             try:
                 link.connect()
                 self._link = link
+                self._current_hub = hub
             except LinkError:
-                # Initial connect failed; link will be retried
+                # Initial connect failed; publish() retries on the next call and a
+                # later election change re-triggers the link.
                 link.close()
                 self._link = None
+                self._current_hub = None
 
     def _handle_client_roster(self, new_roster: list[Hello]) -> None:
         with self._roster_lock:

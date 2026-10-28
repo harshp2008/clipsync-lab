@@ -46,6 +46,7 @@ class Election:
         self._tracker: HubTracker = HubTracker(self._clock, debounce=self._debounce)
         self._consecutive_missed_pongs: int = 0
         self._forced_logged_for: str | None = None
+        self._last_forced: bool = False
         self._current_hub: str | None = None
 
         self._lock = threading.RLock()
@@ -57,6 +58,12 @@ class Election:
         """Current elected hub ID, or None if no hub elected yet."""
         with self._lock:
             return self._tracker.current_hub
+
+    @property
+    def last_forced(self) -> bool:
+        """Whether the most recent probe had to force a hub (all declined)."""
+        with self._lock:
+            return self._last_forced
 
     def set_devices(self, hellos: Iterable[Hello | Device]) -> None:
         """Replace the peer candidate list."""
@@ -123,6 +130,7 @@ class Election:
             )
 
             self._consecutive_missed_pongs = missed_counter[0]
+            self._last_forced = forced
 
             if forced:
                 if self._forced_logged_for != candidate:
