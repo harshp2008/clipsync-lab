@@ -15,7 +15,9 @@ import urllib.parse
 
 import tomllib
 
+from meshcore.addressing import ADDRESS_KINDS, Address
 from meshcore.config import GroupConfig, MeshConfig, PeerConfig, RelayConfig
+from meshcore.discovery import DEFAULT_DISCOVERY_PORT
 from .crypto import CryptoError, FernetCodec
 
 __all__ = ["ConfigError", "DaemonConfig", "load_config"]
@@ -40,6 +42,11 @@ _ALLOWED_KEYS = frozenset(
         "bind",
         "port",
         "peers",
+        "discovery",
+        "discovery_port",
+        "discovery_interval",
+        "state_dir",
+        "address_timeout",
         "poll_interval",
         "reconnect_delay",
         "connect_timeout",
@@ -71,6 +78,11 @@ class DaemonConfig:
     bind: str = "127.0.0.1"
     port: int = 8765
     peers: tuple[PeerConfig, ...] = ()
+    discovery: bool = False
+    discovery_port: int = DEFAULT_DISCOVERY_PORT
+    discovery_interval: float = 5.0
+    state_dir: str | None = None
+    address_timeout: float = 2.0
     poll_interval: float = 0.5
     reconnect_delay: float = 0.2
     connect_timeout: float = 5.0
@@ -99,6 +111,11 @@ class DaemonConfig:
             bind=self.bind,
             port=self.port,
             peers=self.peers,
+            discovery=self.discovery,
+            discovery_port=self.discovery_port,
+            discovery_interval=self.discovery_interval,
+            state_dir=self.state_dir,
+            address_timeout=self.address_timeout,
             reconnect_delay=self.reconnect_delay,
             connect_timeout=self.connect_timeout,
         )
@@ -340,7 +357,9 @@ def load_config(path: str | Path) -> DaemonConfig:
         raw_peers = data["peers"]
         if not isinstance(raw_peers, list):
             raise ConfigError(f"'peers' must be a list of tables, got {type(raw_peers).__name__}")
-        _peer_allowed_keys = frozenset({"device_id", "name", "address", "perm", "temp_rank", "will_hub"})
+        _peer_allowed_keys = frozenset(
+            {"device_id", "name", "address", "addresses", "perm", "temp_rank", "will_hub"}
+        )
         for i, p in enumerate(raw_peers):
             if not isinstance(p, dict):
                 raise ConfigError(f"peer #{i} must be a table")
@@ -351,8 +370,64 @@ def load_config(path: str | Path) -> DaemonConfig:
                 raise ConfigError(f"peer #{i} missing required string 'device_id'")
             if "name" not in p or not isinstance(p["name"], str) or not p["name"].strip():
                 raise ConfigError(f"peer #{i} missing required string 'name'")
-            if "address" not in p or not isinstance(p["address"], str) or not p["address"].strip():
-                raise ConfigError(f"peer #{i} missing required string 'address'")
+
+            p_address = ""
+            if "address" in p and p["address"] is not None:
+                if not isinstance(p["address"], str) or not p["address"].strip():
+                    raise ConfigError(f"peer #{i} 'address' must be a non-empty string")
+                p_address = p["address"].strip()
+
+            p_addresses_list: list[Address] = []
+            if "addresses" in p and p["addresses"] is not None:
+                raw_addrs = p["addresses"]
+                if not isinstance(raw_addrs, list):
+                    raise ConfigError(f"peer #{i} 'addresses' must be a list of tables")
+                _addr_allowed_keys = frozenset({"kind", "host", "port"})
+                for j, a in enumerate(raw_addrs):
+                    if not isinstance(a, dict):
+                        raise ConfigError(f"peer #{i} address #{j} must be a table")
+                    a_unknown = set(a.keys()) - _addr_allowed_keys
+                    if a_unknown:
+                        raise ConfigError(
+                            f"Unknown key(s) in peer #{i} address #{j}: {', '.join(sorted(a_unknown))}"
+                        )
+                    if (
+                        "kind" not in a
+                        or not isinstance(a["kind"], str)
+                        or a["kind"].strip() not in ADDRESS_KINDS
+                    ):
+                        raise ConfigError(
+                            f"peer #{i} address #{j} 'kind' must be one of {ADDRESS_KINDS}"
+                        )
+                    if "host" not in a or not isinstance(a["host"], str) or not a["host"].strip():
+                        raise ConfigError(f"peer #{i} address #{j} 'host' must be a non-empty string")
+                    a_port = None
+                    if "port" in a and a["port"] is not None:
+                        if (
+                            isinstance(a["port"], bool)
+                            or not isinstance(a["port"], int)
+                            or not (1 <= a["port"] <= 65535)
+                        ):
+                            raise ConfigError(
+                                f"peer #{i} address #{j} 'port' must be an int between 1 and 65535"
+                            )
+                        a_port = a["port"]
+                    try:
+                        p_addresses_list.append(
+                            Address(
+                                kind=a["kind"].strip(),
+                                host=a["host"].strip(),
+                                port=a_port,
+                            )
+                        )
+                    except ValueError as exc:
+                        raise ConfigError(f"Invalid address in peer #{i}: {exc}") from exc
+
+            if not p_address and not p_addresses_list:
+                raise ConfigError(
+                    f"peer #{i} requires at least one of 'address' or 'addresses'"
+                )
+
             p_perm = None
             if "perm" in p and p["perm"] is not None:
                 if isinstance(p["perm"], bool) or not isinstance(p["perm"], int) or p["perm"] < 0:
@@ -372,10 +447,11 @@ def load_config(path: str | Path) -> DaemonConfig:
                 PeerConfig(
                     device_id=p["device_id"].strip(),
                     name=p["name"].strip(),
-                    address=p["address"].strip(),
+                    address=p_address,
                     perm=p_perm,
                     temp_rank=p_temp,
                     will_hub=p_will,
+                    addresses=tuple(p_addresses_list),
                 )
             )
     peers = tuple(peers_list)
@@ -456,6 +532,39 @@ def load_config(path: str | Path) -> DaemonConfig:
             data["connect_timeout"], "connect_timeout"
         )
 
+    # discovery, discovery_port, discovery_interval, state_dir, address_timeout
+    discovery = False
+    if "discovery" in data and data["discovery"] is not None:
+        if not isinstance(data["discovery"], bool):
+            raise ConfigError("'discovery' must be a bool")
+        discovery = data["discovery"]
+
+    discovery_port = DEFAULT_DISCOVERY_PORT
+    if "discovery_port" in data and data["discovery_port"] is not None:
+        val = data["discovery_port"]
+        if isinstance(val, bool) or not isinstance(val, int) or not (0 <= val <= 65535):
+            raise ConfigError(f"'discovery_port' must be an int between 0 and 65535, got {val!r}")
+        discovery_port = val
+
+    discovery_interval = 5.0
+    if "discovery_interval" in data and data["discovery_interval"] is not None:
+        discovery_interval = _validate_positive_float(
+            data["discovery_interval"], "discovery_interval"
+        )
+
+    state_dir = None
+    if "state_dir" in data and data["state_dir"] is not None:
+        val = data["state_dir"]
+        if not isinstance(val, str) or not val.strip():
+            raise ConfigError("'state_dir' must be a non-empty string")
+        state_dir = val.strip()
+
+    address_timeout = 2.0
+    if "address_timeout" in data and data["address_timeout"] is not None:
+        address_timeout = _validate_positive_float(
+            data["address_timeout"], "address_timeout"
+        )
+
     return DaemonConfig(
         device_id=device_id,
         token=token,
@@ -473,6 +582,11 @@ def load_config(path: str | Path) -> DaemonConfig:
         bind=bind,
         port=port,
         peers=peers,
+        discovery=discovery,
+        discovery_port=discovery_port,
+        discovery_interval=discovery_interval,
+        state_dir=state_dir,
+        address_timeout=address_timeout,
         poll_interval=poll_interval,
         reconnect_delay=reconnect_delay,
         connect_timeout=connect_timeout,
