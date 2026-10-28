@@ -253,10 +253,10 @@ class MeshConfig:
         if (
             isinstance(self.discovery_port, bool)
             or not isinstance(self.discovery_port, int)
-            or not (0 <= self.discovery_port <= 65535)
+            or not (1 <= self.discovery_port <= 65535)
         ):
             raise ValueError(
-                f"discovery_port must be an int between 0 and 65535, got {self.discovery_port!r}"
+                f"discovery_port must be an int between 1 and 65535, got {self.discovery_port!r}"
             )
         _validate_positive_float(self.discovery_interval, "discovery_interval")
         if self.state_dir is not None:

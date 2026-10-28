@@ -44,9 +44,7 @@ _ALLOWED_KEYS = frozenset(
         "peers",
         "discovery",
         "discovery_port",
-        "discovery_interval",
         "state_dir",
-        "address_timeout",
         "poll_interval",
         "reconnect_delay",
         "connect_timeout",
@@ -80,9 +78,7 @@ class DaemonConfig:
     peers: tuple[PeerConfig, ...] = ()
     discovery: bool = False
     discovery_port: int = DEFAULT_DISCOVERY_PORT
-    discovery_interval: float = 5.0
     state_dir: str | None = None
-    address_timeout: float = 2.0
     poll_interval: float = 0.5
     reconnect_delay: float = 0.2
     connect_timeout: float = 5.0
@@ -113,9 +109,7 @@ class DaemonConfig:
             peers=self.peers,
             discovery=self.discovery,
             discovery_port=self.discovery_port,
-            discovery_interval=self.discovery_interval,
             state_dir=self.state_dir,
-            address_timeout=self.address_timeout,
             reconnect_delay=self.reconnect_delay,
             connect_timeout=self.connect_timeout,
         )
@@ -532,7 +526,7 @@ def load_config(path: str | Path) -> DaemonConfig:
             data["connect_timeout"], "connect_timeout"
         )
 
-    # discovery, discovery_port, discovery_interval, state_dir, address_timeout
+    # discovery, discovery_port, state_dir
     discovery = False
     if "discovery" in data and data["discovery"] is not None:
         if not isinstance(data["discovery"], bool):
@@ -542,15 +536,9 @@ def load_config(path: str | Path) -> DaemonConfig:
     discovery_port = DEFAULT_DISCOVERY_PORT
     if "discovery_port" in data and data["discovery_port"] is not None:
         val = data["discovery_port"]
-        if isinstance(val, bool) or not isinstance(val, int) or not (0 <= val <= 65535):
-            raise ConfigError(f"'discovery_port' must be an int between 0 and 65535, got {val!r}")
+        if isinstance(val, bool) or not isinstance(val, int) or not (1 <= val <= 65535):
+            raise ConfigError(f"'discovery_port' must be an int between 1 and 65535, got {val!r}")
         discovery_port = val
-
-    discovery_interval = 5.0
-    if "discovery_interval" in data and data["discovery_interval"] is not None:
-        discovery_interval = _validate_positive_float(
-            data["discovery_interval"], "discovery_interval"
-        )
 
     state_dir = None
     if "state_dir" in data and data["state_dir"] is not None:
@@ -558,12 +546,6 @@ def load_config(path: str | Path) -> DaemonConfig:
         if not isinstance(val, str) or not val.strip():
             raise ConfigError("'state_dir' must be a non-empty string")
         state_dir = val.strip()
-
-    address_timeout = 2.0
-    if "address_timeout" in data and data["address_timeout"] is not None:
-        address_timeout = _validate_positive_float(
-            data["address_timeout"], "address_timeout"
-        )
 
     return DaemonConfig(
         device_id=device_id,
@@ -584,9 +566,7 @@ def load_config(path: str | Path) -> DaemonConfig:
         peers=peers,
         discovery=discovery,
         discovery_port=discovery_port,
-        discovery_interval=discovery_interval,
         state_dir=state_dir,
-        address_timeout=address_timeout,
         poll_interval=poll_interval,
         reconnect_delay=reconnect_delay,
         connect_timeout=connect_timeout,

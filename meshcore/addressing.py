@@ -124,7 +124,10 @@ def _last_good_key(last_good: Any) -> tuple[str, int] | None:
         return last_good.key
     if isinstance(last_good, tuple) and len(last_good) == 2:
         host, port = last_good
-        return (str(host).strip().lower(), int(port))
+        try:
+            return (str(host).strip().lower(), int(port))
+        except (TypeError, ValueError):
+            return None
     if isinstance(last_good, str):
         try:
             parsed = parse_address(last_good)
@@ -228,7 +231,10 @@ class LastGoodStore:
         if not isinstance(address, Address):
             return
         dev_id = device_id.strip()
-        val_str = f"{address.host}:{address.effective_port}"
+        host = address.host
+        if ":" in host and not (host.startswith("[") and host.endswith("]")):
+            host = f"[{host}]"
+        val_str = f"{host}:{address.effective_port}"
 
         with self._lock:
             try:

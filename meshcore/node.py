@@ -76,7 +76,9 @@ class Node:
         )
         self._clock: Callable[[], float] | None = clock
         self._probe_url: Callable[[str, float], bool] = (
-            probe_url if probe_url is not None else probe_hub
+            probe_url
+            if probe_url is not None
+            else (lambda url, timeout: probe_hub(url, config.token, timeout))
         )
         self._discovery_socket_factory: Callable[[], DiscoverySocket] | None = (
             discovery_socket_factory
@@ -86,7 +88,7 @@ class Node:
         }
 
         state_dir = (
-            Path(config.state_dir)
+            Path(config.state_dir).expanduser()
             if config.state_dir is not None
             else default_state_dir()
         )
@@ -267,6 +269,7 @@ class Node:
 
             # 2. Start discovery (if enabled)
             if self._config.discovery:
+                sock: DiscoverySocket | None = None
                 try:
                     sock = (
                         self._discovery_socket_factory()
@@ -282,12 +285,18 @@ class Node:
                         peers={p.device_id for p in self._config.peers},
                         clock=self._clock if self._clock is not None else time.monotonic,
                         interval=self._config.discovery_interval,
+                        discovery_port=self._config.discovery_port,
                         logger=logging.getLogger("meshcore.discovery"),
                     )
                     self._discovery.start()
                 except Exception as exc:
                     logger.warning("Failed to start discovery: %s", exc)
                     self._discovery = None
+                    if sock is not None:
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass
 
             # 3. Start election driver
             preferred_id = self._config.relay.device_id if self._config.relay is not None else None

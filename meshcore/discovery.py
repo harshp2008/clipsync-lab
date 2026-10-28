@@ -305,6 +305,7 @@ class Discovery:
         clock: Callable[[], float] = time.monotonic,
         interval: float = DEFAULT_BEACON_INTERVAL,
         max_age: float = DEFAULT_MAX_AGE,
+        discovery_port: int = DEFAULT_DISCOVERY_PORT,
         broadcast_addresses: list[str] | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -312,6 +313,7 @@ class Discovery:
         self._device_id: str = device_id
         self._token: str = token
         self._port: int = port
+        self._discovery_port: int = int(discovery_port)
         self._socket: DiscoverySocket = socket
         self._peers: set[str] = set(peers)
         self._clock: Callable[[], float] = clock
@@ -383,7 +385,7 @@ class Discovery:
         )
         for dest in self._destinations:
             try:
-                self._socket.send(datagram, (dest, DEFAULT_DISCOVERY_PORT))
+                self._socket.send(datagram, (dest, self._discovery_port))
             except OSError as exc:
                 with self._lock:
                     self._send_errors += 1
