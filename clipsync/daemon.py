@@ -415,13 +415,6 @@ def main(
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 2
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level, logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        stream=sys.stderr,
-        force=True,
-    )
-
     try:
         config_path = Path(args.config).expanduser()
         config = load_config(config_path)
@@ -429,6 +422,16 @@ def main(
     except ConfigError as exc:
         sys.stderr.write(f"Configuration error: {exc}\n")
         return 2
+
+    # Configure logging only for a run that passed validation.  Config-error paths
+    # (and tests that exercise them) must not reconfigure global logging, which
+    # would detach pytest/ROS capture handlers for later tests in the same process.
+    logging.basicConfig(
+        level=getattr(logging, args.log_level, logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stderr,
+        force=True,
+    )
 
     if config.role == "relay":
         return _run_relay(config, once=args.once, stop_event=stop_event)
