@@ -811,3 +811,33 @@ frozen test was edited; the fixes were production/docs/smoke-only.
   `~/.local/state/meshcore/last_good.json` absent throughout and at the end; zero
   `Logging error`. Frozen acceptance diff empty.
 
+## D61 — State channel: design + frozen tests, no implementation (2026-10-29)
+- Branch `design/state-channel` from `main` `f18c16e`; DIRECT, no agy job. This run is
+  design and frozen acceptance tests only (S1-S11 in
+  `tests/acceptance/test_meshcore_state.py`); the implementation is a separate later
+  run and must not edit the frozen file.
+- **Why a state channel.** H24: hub broadcast is fire-and-forget, so a copy made before
+  a member attaches or during the handover window is lost while the engine treats it
+  as sent. Design `docs/design/meshcore-state.md`: `Node.publish_state/on_state/
+  get_state`, payload-opaque LWW per key, clear envelope header `{key, hlc, author}`
+  with an encrypted body, hub register one value per key per group in memory only,
+  every client pushes its register and pulls the hub snapshot on every attach.
+- **No new `meshcore/*.py` module.** Frozen G7 (and A10) hard-code a per-basename
+  dependency allowlist; a new `meshcore/state.py` would fail G7 without an
+  owner-approved frozen-test edit (the H20 precedent). Decision: the state logic lives
+  in existing pure-core modules (`coordination.py` HLC/version/register/limits,
+  `messages.py` frames, `node.py` API, `hub.py` hub side, `link.py` attach hook).
+  `clipsync/state_transport.py` is a new *app-side* file and is allowed.
+- **No sequence numbers.** The register value is self-describing and idempotent;
+  attach push + snapshot is the repair; gaps are intended (latest value, not a log).
+- **Frozen D7 conflict, again.** `test_d7_previous_suite_still_collects_300_tests`
+  would count the new file. Extended the existing `pytest_ignore_collect` shim to skip
+  `test_meshcore_state.py` only in that exact historical `--collect-only` invocation;
+  normal runs collect 320. No frozen test edited.
+- **Red run (by design).** `pytest -q tests/acceptance/test_meshcore_state.py` → 11
+  failed, 0 passed; every failure is a missing API/constant, not a test bug.
+- **Asked-owner** (also in the design's decisions table): 8 MiB max state payload, the
+  300 s clock-ahead bound plus quarantine, hub register memory-only, and the ~6 MiB
+  mesh image consequence of the 8 MiB cap.
+
+

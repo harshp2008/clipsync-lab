@@ -627,3 +627,40 @@ Workflow: DIRECT (prompt `DS-fix-state-isolation`); no agy job started. Branch
   every run and at the end; zero `Logging error` / `I/O operation on closed file`.
   Frozen acceptance diff `git diff main -- tests/acceptance` is empty.
 
+---
+
+## Design run: state channel (2026-10-29, branch `design/state-channel`)
+
+Workflow: DIRECT (prompt `DS-clipsync-state-channel-design`); no agy job. Branch cut
+from `main` `f18c16e`. **Design + frozen tests only, then stop.** The feature is NOT
+implemented in this run; the frozen tests are red by design.
+
+- 05:05 — wrote `docs/design/meshcore-state.md` (wire envelope, HLC/total order, hub
+  register, attach/handover/partition/hub-restart flows, failure modes, decisions
+  table, S1-S11 mapping). Closed H24 by design instead of documenting the window:
+  state is LWW per key, the hub keeps the latest value per key per group in memory,
+  and every client pushes + pulls on every attach.
+- 05:06 — appended the pointer in `coordination-v2.md` section 2; marked H24 in
+  `NEEDS_HUMAN.md` as "design proposed" with the four owner questions.
+- 05:07 — wrote `tests/acceptance/test_meshcore_state.py` (S1-S11, 11 tests) and
+  extended `tests/conftest.py::pytest_ignore_collect` so frozen D7 keeps collecting
+  exactly 300 in its historical invocation while normal runs collect 320 (D61).
+- 05:07 — **red run**: `python3 -m pytest -q tests/acceptance/test_meshcore_state.py`
+  → **11 failed, 0 passed** in 0.46 s, all "API does not exist yet"
+  (`AttributeError: 'Node' object has no attribute 'publish_state'`,
+  `Node.__init__() got an unexpected keyword argument 'wall_clock'`,
+  `ImportError: cannot import name 'STATE_MAGIC'`,
+  `ModuleNotFoundError: clipsync.state_transport`). Full collection: 320 tests;
+  historical D7 count: 300.
+- 05:08 — full suite while the contract is red: **308 passed, 11 contract failures**,
+  plus G7's clean-shell meta-test (it runs the whole suite in a subprocess and needs a
+  zero exit code). With the new file not collected, the legacy suite is 308 passed + G7
+  (the other 308) = 309; no existing test changed. G7 goes green when the
+  implementation makes S1-S11 pass.
+- Next (separate run): implement per section 15 of the design, keep
+  `git diff <frozen-tests-commit> -- tests/acceptance` empty, then update
+  `scripts/smoke_two_processes.py` to single-copy (`TEXT-RETRY 0` /
+  `FAILOVER-RETRY 0`) and re-run the 20x/5+5 gate.
+
+
+
