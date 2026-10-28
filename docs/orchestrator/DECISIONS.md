@@ -277,3 +277,69 @@ not `Device` objects; `encode_hello` returns a JSON-able `dict` and always emits
 Mapping. Phase 1 deliberately keeps the device_id tiebreak for colliding temp ranks;
 the "larger fragment is the reference" alternative (design §12.2) is **not**
 implemented and needs phase-2 fragment membership.
+
+## D31 — Phase 2a: GATED contract first (2026-10-28 13:50 IST)
+Deliverable is end-to-end test-checkable, so GATED again. `integration/hub-election`
+was cut from `main` at `5a0069e` (phase-1 coordination already merged; baseline **253
+passed**). The interface contract is `docs/design/meshcore-phase2a.md`; the frozen
+tests are `tests/acceptance/test_meshcore_hub.py` (A0–A7), 
+`tests/acceptance/test_clipsync_on_meshcore.py` (A8–A10) and the marked exploratory
+`tests/acceptance/test_meshcore_exploratory.py`. Quota before the start: weekly
+**99.64%** / 5h **98.73%**, far above the 10%/15% floor.
+
+## D32 — meshcore transport may use `websockets` (planned deviation, documented)
+The request says "meshcore/ imports only the standard library", but phase 2a moves the
+existing WebSocket relay into `meshcore/hub.py` and its client into
+`meshcore/link.py`; the project already depends on `websockets` 10.4. Re-implementing
+RFC 6455 in the standard library (handshake, masking, fragmentation, ping/pong,
+close codes) would be a larger correctness and security risk than reusing the existing
+transport, and would put the frozen relay compatibility tests at risk. Decision: the
+**pure core** (`config`, `coordination`, `messages`, `election`, `node`) is
+standard-library-only and the A10 test enforces it; `hub.py`/`link.py` are the only
+modules allowed to import `websockets`, and A10 enforces exactly that allowlist plus
+the no-app-import rule. This is the one literal deviation from the request and is
+reported to the owner.
+
+## D33 — Mode switch: `peers` non-empty selects mesh; old configs stay legacy
+`relay_url` becomes optional only when `peers` is non-empty. With no peers,
+`load_config` still requires `relay_url` and `daemon.main` keeps the existing
+`RelayTransport` path, so old config files behave exactly as before (A9). With peers,
+`daemon.main` builds a `meshcore.node.Node` and `clipsync.mesh_transport.NodeTransport`.
+`build_transport` is unchanged for compatibility (`test_builders` expects a
+`RelayTransport`). Adding `port` (0..65535, default 8765) was necessary because static
+peers must dial a known hub address and the task listed only `bind`; `bind` is used by
+the elected hub role.
+
+## D34 — Every node listens; being hub is an election result
+`probe_hub` needs to probe devices before any election has completed, so every Node
+starts its hub listener on `bind:port` and only the elected node behaves as the hub
+for its app (publishing/forwarding still happens on the server, but clients connect
+to the elected hub and migrate away on a change). This avoids a bootstrapping
+chicken-and-egg where nobody answers the first probe. Consequence: a stale client can
+briefly sit on a non-hub listener during a transition; election plus debounce moves
+it, and tests wait for the converged hub before asserting payload flow.
+
+## D35 — `Node.publish` raises without a route; the engine keeps its outbox
+The contract says publish is immediate so a failure is visible to callers. The
+clipsync `NodeTransport` maps `NodeError` to `TransportError`, which the existing
+`SyncEngine` already handles by keeping frames at the head of its outbox and retrying
+on the next poll. This preserves the tested outbox behaviour and is what the
+exploratory failover-copy test exercises; the result is reported, not patched over.
+
+## D36 — `RelayTransport` is a thin subclass of `Link`
+`clipsync/relay_transport.py` becomes `class RelayTransport(Link)` with `hello=None`
+and the legacy thread name `clipsync-relay-transport`, translating `LinkError` to
+`TransportError` in `connect`/`send`/`recv`. A10 checks the subclass relation, the
+absence of the WebSocket loop in the wrapper, and the line budget. `RelayServer`
+becomes a `HubServer` subclass keeping the loopback-only constructor validation so
+every existing relay test stays green.
+
+## D37 — External API choices frozen by the tests
+`Node.hub_id` and `Node.is_hub` are read-only observations added to the minimal API so
+tests can assert convergence and "exactly one hub"; callbacks remain the primary
+notification path. A hub's roster includes the hub's own Hello; a client's roster is
+the last roster received and starts as `[self]`. Only helloed clients receive control
+messages (old clients stay payload-only), which keeps their frame stream byte-clean.
+A reserved data envelope is used only hub→helloed-client; client→hub data remains raw
+opaque bytes. `can_reach(a, b)` blocks both probes and link connects for the partition
+test. The `roster`/`leaving` codecs use compact JSON text frames.
