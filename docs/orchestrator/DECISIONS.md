@@ -277,3 +277,136 @@ not `Device` objects; `encode_hello` returns a JSON-able `dict` and always emits
 Mapping. Phase 1 deliberately keeps the device_id tiebreak for colliding temp ranks;
 the "larger fragment is the reference" alternative (design §12.2) is **not**
 implemented and needs phase-2 fragment membership.
+
+## D31 — Phase 2a: GATED contract first (2026-10-28 13:50 IST)
+Deliverable is end-to-end test-checkable, so GATED again. `integration/hub-election`
+was cut from `main` at `5a0069e` (phase-1 coordination already merged; baseline **253
+passed**). The interface contract is `docs/design/meshcore-phase2a.md`; the frozen
+tests are `tests/acceptance/test_meshcore_hub.py` (A0–A7), 
+`tests/acceptance/test_clipsync_on_meshcore.py` (A8–A10) and the marked exploratory
+`tests/acceptance/test_meshcore_exploratory.py`. Quota before the start: weekly
+**99.64%** / 5h **98.73%**, far above the 10%/15% floor.
+
+## D32 — meshcore transport may use `websockets` (planned deviation, documented)
+The request says "meshcore/ imports only the standard library", but phase 2a moves the
+existing WebSocket relay into `meshcore/hub.py` and its client into
+`meshcore/link.py`; the project already depends on `websockets` 10.4. Re-implementing
+RFC 6455 in the standard library (handshake, masking, fragmentation, ping/pong,
+close codes) would be a larger correctness and security risk than reusing the existing
+transport, and would put the frozen relay compatibility tests at risk. Decision: the
+**pure core** (`config`, `coordination`, `messages`, `election`, `node`) is
+standard-library-only and the A10 test enforces it; `hub.py`/`link.py` are the only
+modules allowed to import `websockets`, and A10 enforces exactly that allowlist plus
+the no-app-import rule. This is the one literal deviation from the request and is
+reported to the owner.
+
+## D33 — Mode switch: `peers` non-empty selects mesh; old configs stay legacy
+`relay_url` becomes optional only when `peers` is non-empty. With no peers,
+`load_config` still requires `relay_url` and `daemon.main` keeps the existing
+`RelayTransport` path, so old config files behave exactly as before (A9). With peers,
+`daemon.main` builds a `meshcore.node.Node` and `clipsync.mesh_transport.NodeTransport`.
+`build_transport` is unchanged for compatibility (`test_builders` expects a
+`RelayTransport`). Adding `port` (0..65535, default 8765) was necessary because static
+peers must dial a known hub address and the task listed only `bind`; `bind` is used by
+the elected hub role.
+
+## D34 — Every node listens; being hub is an election result
+`probe_hub` needs to probe devices before any election has completed, so every Node
+starts its hub listener on `bind:port` and only the elected node behaves as the hub
+for its app (publishing/forwarding still happens on the server, but clients connect
+to the elected hub and migrate away on a change). This avoids a bootstrapping
+chicken-and-egg where nobody answers the first probe. Consequence: a stale client can
+briefly sit on a non-hub listener during a transition; election plus debounce moves
+it, and tests wait for the converged hub before asserting payload flow.
+
+## D35 — `Node.publish` raises without a route; the engine keeps its outbox
+The contract says publish is immediate so a failure is visible to callers. The
+clipsync `NodeTransport` maps `NodeError` to `TransportError`, which the existing
+`SyncEngine` already handles by keeping frames at the head of its outbox and retrying
+on the next poll. This preserves the tested outbox behaviour and is what the
+exploratory failover-copy test exercises; the result is reported, not patched over.
+
+## D36 — `RelayTransport` is a thin subclass of `Link`
+`clipsync/relay_transport.py` becomes `class RelayTransport(Link)` with `hello=None`
+and the legacy thread name `clipsync-relay-transport`, translating `LinkError` to
+`TransportError` in `connect`/`send`/`recv`. A10 checks the subclass relation, the
+absence of the WebSocket loop in the wrapper, and the line budget. `RelayServer`
+becomes a `HubServer` subclass keeping the loopback-only constructor validation so
+every existing relay test stays green.
+
+## D37 — External API choices frozen by the tests
+`Node.hub_id` and `Node.is_hub` are read-only observations added to the minimal API so
+tests can assert convergence and "exactly one hub"; callbacks remain the primary
+notification path. A hub's roster includes the hub's own Hello; a client's roster is
+the last roster received and starts as `[self]`. Only helloed clients receive control
+messages (old clients stay payload-only), which keeps their frame stream byte-clean.
+A reserved data envelope is used only hub→helloed-client; client→hub data remains raw
+opaque bytes. `can_reach(a, b)` blocks both probes and link connects for the partition
+test. The `roster`/`leaving` codecs use compact JSON text frames.
+
+## D38 — Phase 2a takeover after a verify timeout (2026-10-28 14:44 IST)
+The single implementation job (`4e1b3b79…`) produced 7 commits, plan 9/9 and a clean
+audit, but the wrapper verify timed out. The cause was a real self-deadlock:
+`Election.start()` held its non-reentrant `threading.Lock` and then called
+`run_once()`, which acquires the same lock. I reproduced it, resumed the job once
+with precise instructions (RLock, merge roster with configured peers, retarget the
+link when the hub changes, stop outside the lifecycle lock). The job applied all four
+(commits `a02a17e`, `fa2cdd5`, `11dcc25`, `f5b5339`), but the wrapper verify still
+reported rc 124 and repeated full-suite runs exposed a remaining race: `hub_id`
+followed the election result before the new client link was attached, so A5/A7 could
+observe convergence while a node was not yet reachable. I took over at the gate,
+merged the job branch into `integration/hub-election`, and added the attached-hub
+split (`_desired_hub` vs `_current_hub`), the forced-reason log, and the final gate
+runs. The frozen `tests/acceptance` were never edited (`git diff 906c2e0 --
+tests/acceptance` empty). Cost to this point: **1.93 weekly / 6.76 5h points**; job
+worktree and branch removed without force.
+Reason for takeover rather than a second fix job: the cumulative 45-minute job budget
+was already spent, the failure was a small, well-understood race, and I had already
+reproduced and fixed it locally; the user's rule allows taking over and logging it.
+
+## D39 — `hub_id` means "attached", `is_hub` means "elected" (14:50 IST)
+The frozen tests use `node.hub_id` as the convergence signal, then publish. If
+`hub_id` follows the election tracker, it moves before the new `Link` is connected
+(the election callback runs the connect afterwards), so a peer can wait for
+`hub_id == "n0"` and then publish into a node that is still reconnecting (observed as
+intermittent A5/A7 failures in the full suite). `Node` now keeps `_desired_hub` (the
+election result, drives `is_hub`, publish routing and `_ensure_link`) and
+`_current_hub` (the attached hub, returned by `hub_id`; set immediately for self,
+only after a successful client connect for a remote hub). A failed connect leaves
+`hub_id` unset and `publish()` retries `_ensure_link`; the next election change also
+retries. This is a semantic clarification of the contract, not a test change.
+
+## D40 — Forced-hub logging and the reason on every hub change (14:52 IST)
+Election logs one WARNING `All reachable devices decline will_hub; forced hub: <id>`
+when `probe_hub` returns `forced=True` (timestamped once per forced candidate, not
+per heartbeat). `Election.last_forced` is exposed so `Node` logs every hub change at
+INFO with old hub, new hub and a reason string (`forced: no reachable device
+will_hub` or `election probe`). The task asked for the reason at INFO and a WARNING
+for the forced case; both are now explicit.
+
+## D41 — Config/API decisions for phase 2a (14:52 IST)
+- Mesh mode is selected by a non-empty `peers` list. `relay_url` is required only in
+  legacy mode; old config files load with the new fields defaulted and the daemon
+  keeps the old single-relay path (A9). This is the smallest change that satisfies
+  both "use Node" and "old configs behave exactly as before".
+- `port` was added next to the requested `bind`: static peers must dial a known
+  address, and a node cannot discover its own ephemeral port from config. Default
+  `8765`, validated 0..65535.
+- `DaemonConfig.to_mesh_config()` maps name (defaulting to `device_id`), token, rank
+  fields and peers; mesh timings keep the task defaults (10 s heartbeat, 3 missed
+  pongs, 2 s probe, 30 s debounce).
+- The hub listener runs on every node from `start()`, because `probe_hub` must be
+  able to reach a candidate before that candidate has won an election; being the
+  active hub is the election result. This is logged here because the wording "the
+  next one starts the relay" could also be read as lazily starting the listener.
+
+## D42 — Security: off-loopback `bind` is token-only, no TLS yet (14:52 IST)
+`bind` is honoured by the elected `HubServer`; the compatibility `RelayServer`
+remains loopback-only by its existing contract. Binding a tailnet/LAN address makes
+the relay reachable to anyone who can route to it: the only authentication is the
+shared bearer token, sent in the WebSocket handshake over cleartext `ws://` (no TLS
+in phase 2a). On a shared LAN an attacker can observe/replay the token and join the
+mesh; the hub forwards opaque bytes, so the optional clipsync Fernet key still
+protects payloads end to end, but without it the hub can read clipboard frames. Treat
+off-loopback binding as trusted-network only until a TLS/reverse-proxy phase. This is
+recorded in NEEDS_HUMAN H15 and the REPORT security note.

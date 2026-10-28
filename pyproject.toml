@@ -24,3 +24,6 @@ packages = ["clipsync", "meshcore"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra"
+markers = [
+    "exploratory: exploratory checks that are not part of the frozen acceptance gate",
+]

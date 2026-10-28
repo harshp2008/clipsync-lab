@@ -597,3 +597,141 @@ git checkout main && git merge --no-ff integration/coordination
   tiebreak; the "larger fragment reference" alternative is deferred (design §12.2).
 - `Hello` is defined only in `meshcore.messages`; no existing `clipsync` protocol path
   was changed, so no hello is on the wire yet.
+
+---
+
+# meshcore phase 2a — elected hub over the existing relay (2026-10-28 15:05 IST)
+
+**Result: phase 2a is implemented and green on `integration/hub-election`.** The
+existing relay is now the elected hub; daemons with static peers exchange hello/roster,
+elect the first reachable willing device, fail over, and hand back after the debounce.
+`main` was not touched; merging the branch is the owner's call (H14).
+
+## Branch and commits
+
+- Base: `main` at **`5a0069e`** ("Merge branch 'integration/coordination'"), baseline
+  full suite **253 passed**.
+- Working branch: **`integration/hub-election`** (never merged into `main`).
+- Frozen contract: **`906c2e0`** ("test: freeze meshcore phase 2a elected-hub
+  contract"): `docs/design/meshcore-phase2a.md`, the three acceptance files, the
+  exploratory marker and the orchestrator plan.
+- Job merge: **`abee603`** ("merge agy: meshcore phase 2a elected hub").
+- Takeover fix: **`db70be4`** ("fix(meshcore): report a hub only after the link is
+  attached").
+- `git diff 906c2e0 -- tests/acceptance`: **empty** (the job never edited the frozen
+  tests; the gate was re-run after the takeover commit).
+
+## Test counts
+
+| Suite | Result |
+|---|---|
+| Baseline on `main` (`5a0069e`) | **253 passed** |
+| Frozen phase-2a acceptance (`test_meshcore_hub.py` A0–A7 + `test_clipsync_on_meshcore.py` A8–A10) | **13 passed**, 10 consecutive runs |
+| Full suite on `integration/hub-election` | **273 passed**, 5 consecutive runs |
+| New tests | 8 (A0–A7) + 5 (A8–A10) + 1 exploratory + 6 job unit tests = **20** |
+| Exploratory (marked, not in the gate) | **passed** — `queued_during_failover=1`, `delivered=True`; reason below |
+
+The full suite includes every pre-existing test with unchanged imports; the only
+non-test source changed in a pre-existing test's world is the relay internals, whose
+public classes and behaviour are preserved.
+
+## agy usage
+
+- Before the start (14:52 IST): Gemini **weekly 99.64%**, **5h 98.73%** remaining;
+  floor 10%/15% — far above.
+- After cleanup (15:04 IST): **weekly 97.71%**, **5h 91.97%** remaining.
+- Measured spend: **1.93 weekly / 6.76 five-hour percentage points** across the one
+  job plus its single resume. Job `4e1b3b79-ede2-486d-b2a9-4fb68639caed`, state
+  `needs_review` (verify rc 124), plan 9/9, audit passed, 11 commits, worktree and
+  branch removed with `agy_cleanup` (no force).
+
+## Step count
+
+The harness step counter read **86** at the last in-session snapshot (14:45 IST); the
+takeover, gate runs and documentation added about thirty more tool steps, so the run
+finished around **step 115**. The agy job itself reported 9/9 checklist steps and 11
+commits.
+
+## Exploratory failover-copy result
+
+`tests/acceptance/test_meshcore_exploratory.py` (marked `@pytest.mark.exploratory`,
+registered in `pyproject.toml`) kills the hub, copies on a surviving daemon **during
+the window before the replacement hub is up**, and then waits for recovery. It passed
+5/5 runs with `queued_during_failover=1` and `delivered=True`.
+
+Reason: `Node.publish` raises `NodeError` while the link is reconnecting, the existing
+`SyncEngine` keeps the frame at the head of its outbox on `TransportError`, and the
+first poll after N1 is attached flushes it to the new hub. So a copy taken after the
+old hub died but before the new one was elected is delivered after recovery, as long
+as a daemon poll or the next clipboard change occurs after reconnect (the daemon polls
+every `poll_interval`, 0.5 s by default). This is an exploratory observation, not part
+of the frozen gate.
+
+## Gate and review notes
+
+- The job produced 7 commits first. Its verify timed out because
+  `Election.start()` held a non-reentrant lock and called `run_once()`, which acquires
+  the same lock — a self-deadlock. I reproduced it, resumed the job once with four
+  precise fixes (RLock, roster merge, link retarget, stop outside the lifecycle
+  lock); it committed all four. The wrapper verify still reported rc 124, and repeated
+  full-suite runs exposed a remaining race: `hub_id` followed the election before the
+  new client link was attached, so A5/A7 could publish into a half-migrated node.
+- I took over at that point (logged D38): merged the job branch, split
+  `_desired_hub` (election, drives `is_hub`/routing) from `_current_hub` (attached,
+  returned by `hub_id`), added the forced reason log, and re-ran the gate. This is the
+  only source change after the merge commit (`db70be4`).
+- The relay never parsed clipsync protocol messages (it was already an opaque byte
+  pipe), so no clipboard-specific parsing had to be split out; the generic forwarding,
+  auth, roster and size handling moved to `meshcore/hub.py`, and the client loop to
+  `meshcore/link.py`.
+- `clipsync/relay_server.py` is now a `HubServer` subclass with the old loopback-only
+  validation; `clipsync/relay_transport.py` is a `Link` subclass with `hello=None` and
+  the old thread name, translating `LinkError` to `TransportError`. A10 checks the
+  subclass relations, the absence of forwarding/client loops and the line budgets.
+- Benign teardown noise: in A6, `caplog` is finalized before the cluster fixture stops
+  the hub threads, so the websockets library occasionally prints a "Logging error"
+  after pytest closes the capture stream. It does not fail any test (5/5 full-suite
+  runs and 10/10 acceptance runs green). It is a test-fixture ordering artifact, not a
+  leak in the implementation: the fixture stops every node and joins the threads.
+
+## Security note on off-loopback binding
+
+`bind` (default `127.0.0.1`) is passed to the elected `HubServer`; the compatibility
+`RelayServer` keeps its loopback-only guard. Binding a tailnet/LAN address exposes the
+relay to anyone who can route to it. Phase 2a keeps **only the shared bearer token**
+authentication and **no TLS**: the token is sent in the WebSocket handshake over
+cleartext `ws://`, so an observer on a shared LAN can read or replay it and join the
+mesh. The hub forwards payloads as opaque bytes and never holds the E2E key, so
+clipsync payloads stay encrypted end to end when `e2e_key` is configured; without it
+the hub can read clipboard frames. Treat off-loopback binding as trusted-network only
+(ideally a private tailnet with ACLs) until TLS/reverse-proxy termination is added.
+See NEEDS_HUMAN H15.
+
+## Ambiguities and decisions (all decided; none asked-owner)
+
+| # | Ambiguity | Decision |
+|---|---|---|
+| 1 | "meshcore imports only the standard library" vs moving the WebSocket relay/link into meshcore | **Decided (documented deviation):** pure core (`config`, `coordination`, `messages`, `election`, `node`) is stdlib-only and A10 enforces it; `hub.py`/`link.py` are the only transport adapters and may import the existing `websockets` 10.4. Re-implementing RFC 6455 in stdlib would be a larger risk (shared-memory handshake/auth/close semantics) for no phase-2a benefit. |
+| 2 | How mesh mode is selected when `relay_url` is required today | **Decided:** mesh mode iff `peers` is non-empty; `relay_url` is required only in legacy mode; the old single-relay path is untouched (A9). |
+| 3 | The requested config list had `bind` but no listen port | **Decided:** added `port` (default 8765, validated) because static peers must dial a known hub address. |
+| 4 | "the next one starts the relay" vs probing a candidate before it is hub | **Decided:** every node starts its hub listener on `start()`; being the active hub is the election result. `probe_hub` needs a listening candidate, and starting the listener lazily has a bootstrapping race. |
+| 5 | What `Node.hub_id` reports during migration | **Decided:** `hub_id` = attached hub (new id only after the client link connects); `is_hub` = election result. This removed the A5/A7 race without changing the frozen tests. |
+| 6 | Should `Node.publish` queue during a failover? | **Decided:** no; it raises `NodeError`, which `NodeTransport` maps to `TransportError`, so the existing engine outbox owns retry. This preserved the tested outbox behaviour and is what the exploratory test validates. |
+| 7 | Who receives roster/control frames | **Decided:** only clients that sent a Hello. Old clients stay payload-only, so their clipboard frame stream is byte-clean (A2). The hub's own Hello is in the roster; a client's roster starts as `[self]`. |
+| 8 | Forced-hub warning content/location | **Decided:** Election logs one WARNING containing `forced` and the device id; Node logs every hub change at INFO with old/new/reason. |
+| 9 | Should the compatibility `RelayServer` accept a non-loopback `bind`? | **Decided:** no; its existing contract/tests require loopback-only. `bind` is used by `Node`'s `HubServer` (hub role). |
+| 10 | Test flakiness in A5/A7 | **Decided as an implementation fix, not a test change:** the attached-hub split makes the waited-on `hub_id` imply a usable link. Frozen tests are byte-identical to `906c2e0`. |
+| 11 | Job verify timed out twice and repeated full-suite runs were flaky | **Decided:** take over at the gate (D38), log it, fix the race, and run the gate myself; no second agy job was started (cumulative 45-minute budget already spent). |
+| 12 | Merge into `main` | **Asked-owner / left to owner** per the explicit instruction: `main` stays at `5a0069e`; see H14. |
+
+## How to verify
+
+```bash
+git checkout integration/hub-election
+python3 -m pytest -q \
+  tests/acceptance/test_meshcore_hub.py tests/acceptance/test_clipsync_on_meshcore.py   # 13
+python3 -m pytest -q                                              # 273
+python3 -m pytest -q tests/acceptance/test_meshcore_exploratory.py -m exploratory -s    # exploratory
+```
+
+Merge when ready (owner): `git checkout main && git merge --no-ff integration/hub-election`.

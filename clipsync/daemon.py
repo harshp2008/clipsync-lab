@@ -377,7 +377,19 @@ def main(
         return 2
 
     make_clipboard = clipboard_factory or build_clipboard
-    make_transport = transport_factory or build_transport
+    if transport_factory is not None:
+        make_transport = transport_factory
+    elif config.peers:
+        from meshcore.node import Node
+        from .mesh_transport import NodeTransport
+
+        def _make_mesh_transport(cfg: DaemonConfig) -> Transport:
+            node = Node(cfg.to_mesh_config())
+            return NodeTransport(node)
+
+        make_transport = _make_mesh_transport
+    else:
+        make_transport = build_transport
     make_codec = codec_factory or build_codec
 
     clipboard = make_clipboard(config)

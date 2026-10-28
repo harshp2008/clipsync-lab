@@ -412,3 +412,76 @@ python3 -m pytest -q                             # full suite must pass
 - 13:16 — docs updated; `agy_cleanup` removes the job worktree/branch without force.
   **`main` remains untouched; merging `integration/coordination` into `main` is left to
   the human** (see NEEDS_HUMAN H13).
+
+---
+
+# meshcore phase 2a — elected hub over the existing relay (2026-10-28 13:45 IST)
+
+**Workflow: GATED.** The deliverable is test-checkable end to end, so the contract
+(`docs/design/meshcore-phase2a.md`) and the frozen acceptance tests are written and
+committed first; one agy job (max 45 min) implements the feature without touching
+`tests/acceptance/`. Gate = empty `git diff <contract-commit> -- tests/acceptance`,
+`agy_review` + reading the diff, merge into `integration/hub-election`, then the
+acceptance file and the full suite run by me. At most one fix job.
+
+- **Base commit: `5a0069e`** (`main`, "Merge branch 'integration/coordination'";
+  baseline suite **253 passed**). Branch `integration/hub-election` cut from it.
+  **`main` is never touched or merged into** this run; the merge is the owner's.
+- Quota before the run: Gemini weekly **99.64%**, 5h **98.73%**; re-check with
+  `agy_usage` immediately before the start. Floor: 10% weekly / 15% 5h.
+- Scope: phase 2a only — meshcore messages (roster/leaving), generic hub, generic
+  link, election driver, Node facade, mesh config + clipsync mapping, clipsync daemon
+  on Node. **Out of scope:** LAN discovery/fallback (2b), naming service/website,
+  panel, routing preferences, Android, state channels, Bluetooth, TLS.
+- Safety: no test touches the real clipboard, non-loopback network, or any service;
+  no push/force; `~/.local/state/agy-mcp` and `~/.config/ai-stack` untouched.
+
+## Deliverables
+
+| Chunk | Owner | Notes |
+|---|---|---|
+| `docs/design/meshcore-phase2a.md` contract | me | frozen before code |
+| `tests/acceptance/test_meshcore_hub.py` (A0–A7) | me | meshcore only; no `clipsync` import |
+| `tests/acceptance/test_clipsync_on_meshcore.py` (A8–A10) | me | thin clipsync integration |
+| `tests/acceptance/test_meshcore_exploratory.py` (marked) | me | not part of the gate; result reported |
+| `meshcore/messages.py`, `hub.py`, `link.py`, `election.py`, `node.py`, `config.py` | agy job 1 | GATED; own unit tests allowed |
+| `clipsync/config.py`, `daemon.py`, `mesh_transport.py`, thin wrappers | agy job 1 | GATED; old tests must stay green |
+| Gate: diff check, review, merge, acceptance + full suite | me | |
+| `PLAN`/`DECISIONS`/`REPORT` final updates | me | |
+
+## Gate commands
+
+```bash
+git diff <contract-commit> -- tests/acceptance   # must be empty
+python3 -m pytest -q tests/acceptance/test_meshcore_hub.py tests/acceptance/test_clipsync_on_meshcore.py
+python3 -m pytest -q                             # full suite must pass
+python3 -m pytest -q tests/acceptance/test_meshcore_exploratory.py -m exploratory  # report only
+```
+
+## Status log
+
+- 13:45 — run start; branch `integration/hub-election` cut from `main` (`5a0069e`).
+  Baseline **253 passed**. `agy_usage`: weekly **99.64%**, 5h **98.73%**.
+- 13:50 — contract + tests written; frozen from the next commit on.
+- 13:53 — **job `4e1b3b79-ede2-486d-b2a9-4fb68639caed` started** (implementation,
+  verify `python3 -m pytest -q`, max 45 min). `agy_usage` immediately before the
+  start: weekly **99.64%** / 5h **98.73%**.
+- 14:26 — first result `needs_review`: 7 commits, plan 9/9, audit passed, but the
+  wrapper verify timed out (rc 124) after 181 tests. I reproduced it: `Election.start`
+  held its non-reentrant lock and called `run_once`, which acquires the same lock.
+- 14:26–14:31 — I resumed the job once with four precise fixes (RLock, roster merge,
+  link retarget, stop outside the lifecycle lock). It committed them (4 more commits)
+  but the wrapper verify still reported rc 124 and the full suite stayed flaky under
+  repeated runs (`A5`/`A7` occasionally failed because `hub_id` moved before the new
+  client link was connected).
+- 14:44 — **takeover** (logged D38): merged the job branch into
+  `integration/hub-election` (`abee603`), added the attached-hub split in
+  `meshcore/node.py` and the forced-reason log, committed `db70be4`. Frozen
+  `tests/acceptance` diff against `906c2e0` is empty.
+- 14:55 — **gate passed**: acceptance files **13 passed** (10 consecutive runs),
+  full suite **273 passed** (5 consecutive runs), exploratory **passed**
+  (`queued_during_failover=1`, delivered). `agy_cleanup` removed the worktree and job
+  branch (no force). Quota after cleanup: weekly **97.71%**, 5h **91.97%**
+  (spend **1.93 / 6.76** points).
+- 15:00 — docs updated; **`main` untouched**. Merging `integration/hub-election` into
+  `main` is left to the owner (NEEDS_HUMAN H14).
