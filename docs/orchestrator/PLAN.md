@@ -595,3 +595,35 @@ merge is the owner's decision).
   Manual `scripts/smoke_two_processes.py`: **10/10 PASS**, median **1.98 s**
   (1.95–2.07 s). Frozen acceptance diff `git diff 742dda3 -- tests/acceptance` is
   empty. No leftover daemon processes or smoke temp dirs.
+
+## Phase 2c — state isolation (`fix/state-isolation`)
+
+Workflow: DIRECT (prompt `DS-fix-state-isolation`); no agy job started. Branch
+`fix/state-isolation` cut from `main` after `integration/deploy` was merged
+(`6f4864c`); `main` is never merged into from this branch.
+
+- 04:34 — reproduced: delete `~/.local/state/meshcore/last_good.json`, run the full
+  suite once → the file is recreated with test and smoke device ids. Stat watcher per
+  test found the writers: `test_meshcore_hub` a0-a7, `test_meshcore_groups`
+  g1-g7 (g7 recursively runs the suite, so it inherits the writes), `test_a8_*` in
+  `test_clipsync_on_meshcore`, the exploratory failover copy, and deploy D3/D4 via
+  `scripts/smoke_two_processes.py`. Root cause: `Node` falls back to
+  `default_state_dir()` (`$XDG_STATE_HOME/meshcore` else `~/.local/state/meshcore`)
+  whenever `MeshConfig.state_dir` is `None`; the tests' configs left it unset and
+  conftest never redirected HOME/XDG.
+- 04:36 — fix (tests): `tests/conftest.py` gains a session-scoped autouse fixture
+  that points HOME, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and
+  `XDG_CACHE_HOME` at a fresh temp root, and at session end fails if a stat-only
+  snapshot of the real state dir changed. `tests/test_state_isolation.py` added
+  (poisoned-HOME subprocess node start/stop + whole-suite mtime assertion).
+  Frozen D7 (`exactly 300 collected`) is kept green by ignoring only the new file in
+  that one historical `--collect-only` invocation (documented in D60).
+- 04:38 — fix (scripts): `scripts/smoke_two_processes.py` writes an explicit
+  `state_dir` into every generated config and exports HOME/XDG roots inside its temp
+  workdir to the child daemons. No production code changed.
+- 04:52 — **final gate PASS**: full suite **5/5** clean (309 passed,
+  43.8–50.5 s) and **5/5** with the ROS PYTHONPATH (309 passed, 44.2–46.8 s);
+  manual smoke **5/5 PASS**. `~/.local/state/meshcore/last_good.json` absent after
+  every run and at the end; zero `Logging error` / `I/O operation on closed file`.
+  Frozen acceptance diff `git diff main -- tests/acceptance` is empty.
+

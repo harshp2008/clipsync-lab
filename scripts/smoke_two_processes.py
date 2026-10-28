@@ -138,7 +138,7 @@ def child_alive(child: Child) -> bool:
     return child.proc.poll() is None
 
 
-def relay_toml(group: str, token: str, port: int) -> str:
+def relay_toml(group: str, token: str, port: int, state_dir: Path) -> str:
     return f"""\
 device_id = {toml_str("smoke-relay")}
 name = {toml_str("Smoke Relay")}
@@ -146,6 +146,7 @@ role = "relay"
 bind = "127.0.0.1"
 port = {port}
 token = {toml_str("smoke-relay-shell-token-unused")}
+state_dir = {toml_str(state_dir)}
 
 [[serve_groups]]
 id = {toml_str(group)}
@@ -166,6 +167,7 @@ def member_toml(
     peer_name: str,
     peer_port: int,
     clipboard_file: Path,
+    state_dir: Path,
 ) -> str:
     return f"""\
 device_id = {toml_str(device_id)}
@@ -173,6 +175,7 @@ name = {toml_str(name)}
 group_id = {toml_str(group)}
 token = {toml_str(token)}
 e2e_key = {toml_str(key)}
+state_dir = {toml_str(state_dir)}
 bind = "127.0.0.1"
 port = {bind_port}
 poll_interval = 0.05
@@ -197,17 +200,37 @@ address = {toml_str(f"127.0.0.1:{peer_port}")}
 """
 
 
-def child_env() -> dict[str, str]:
+def child_env(workdir: Path) -> dict[str, str]:
+    """Build the child environment with HOME and all XDG roots inside ``workdir``.
+
+    The daemons persist ``last_good.json`` under ``$XDG_STATE_HOME/meshcore`` when a
+    peer address is learned.  Pointing every HOME/XDG default at the smoke temp dir
+    keeps a developer's real ``~/.local/state/meshcore`` untouched; each generated
+    config also carries an explicit ``state_dir`` as a second line of defence.
+    """
     env = os.environ.copy()
     prefix = str(REPO_ROOT)
     inherited = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = prefix + ((os.pathsep + inherited) if inherited else "")
     env["PYTHONUNBUFFERED"] = "1"
+
+    xdg_dirs = {
+        "HOME": workdir / "home",
+        "XDG_STATE_HOME": workdir / "xdg-state",
+        "XDG_CONFIG_HOME": workdir / "xdg-config",
+        "XDG_DATA_HOME": workdir / "xdg-data",
+        "XDG_CACHE_HOME": workdir / "xdg-cache",
+    }
+    for path in xdg_dirs.values():
+        path.mkdir(parents=True, exist_ok=True)
+    env.update({key: str(path) for key, path in xdg_dirs.items()})
     return env
 
 
 def run_smoke(workdir: Path) -> None:
-    env = child_env()
+    env = child_env(workdir)
+    state_dir = workdir / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
     group = "smoke-group"
     token = secrets.token_urlsafe(32)
     key = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii")
@@ -221,7 +244,7 @@ def run_smoke(workdir: Path) -> None:
     clip_b = workdir / "member-b-clipboard.txt"
 
     (workdir / "relay.toml").write_text(
-        relay_toml(group, token, relay_port), encoding="utf-8"
+        relay_toml(group, token, relay_port, state_dir), encoding="utf-8"
     )
     (workdir / "member-a.toml").write_text(
         member_toml(
@@ -236,6 +259,7 @@ def run_smoke(workdir: Path) -> None:
             peer_name="Smoke B",
             peer_port=member_b_port,
             clipboard_file=clip_a,
+            state_dir=state_dir,
         ),
         encoding="utf-8",
     )
@@ -252,6 +276,7 @@ def run_smoke(workdir: Path) -> None:
             peer_name="Smoke A",
             peer_port=member_a_port,
             clipboard_file=clip_b,
+            state_dir=state_dir,
         ),
         encoding="utf-8",
     )
