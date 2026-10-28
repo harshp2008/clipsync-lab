@@ -150,6 +150,11 @@ engine echo-loop/dedup/ordering/reconnect, the loopback relay, daemon backoff/
 reconnect resilience, the peer command, and the daemon/config/CLI wiring. Config/CLI
 tests use fake clipboards and a canned `CommandRunner`.
 
+The meshcore election probe is a real authenticated WebSocket connect followed by an
+immediate close, bounded by the configured `probe_timeout`; it does not change another
+library's logger level. A6 waits (up to 8 s) for a non-hub node to attach to the new
+hub before asserting its `hub_id`, so a slow attach is no longer a flake.
+
 ### Running in a ROS-sourced shell
 
 The suite also passes with a ROS 2 Jazzy environment sourced. ROS auto-loads the

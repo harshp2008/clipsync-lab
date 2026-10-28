@@ -447,3 +447,55 @@ lifecycle contract: start/stop (twice) leaves no `meshcore-hub-server` or
 `meshcore-election` thread, the probe against a live hub produces no WARNING/ERROR
 record from the `websockets`/`meshcore` loggers, and a dead port still fails within
 the probe timeout.
+
+## D45 — A6 harness race fixed; logger hack replaced by a real probe (2026-10-28 22:40 IST)
+The owner approved the frozen-test edit recorded as H16: A6's failure was a harness
+race, not a contract flaw. After `n0.stop()`, the test waited only for
+`n2.hub_id == "n2"` and then asserted `n1.hub_id == "n2"` immediately, but `n1` may
+not have attached to the new hub yet. Both immediate assertions in
+`test_a6_will_hub_false_is_skipped_and_all_false_forces_a_hub` are now
+`wait_until(..., timeout=8.0)` with the file's existing failure-message style
+(`[n.hub_id for n in cluster.nodes]`): the cross-node `n1.hub_id == "n2"` after the
+first stop, and `n1.is_hub` after the second stop (the second wait already covered
+`n1.hub_id`, but the owner asked for its immediate assertion to be made a
+wait too). Nothing asserted was removed or weakened; `assert not n1.is_hub` stays
+immediate because it is checked after the race window is closed.
+
+Audit of the same pattern in every other frozen acceptance test (immediate
+`hub_id`/`is_hub` assertion on a node that was not the one just waited for):
+- `tests/acceptance/test_meshcore_hub.py` A0/A2: `assert n1.is_hub` sits behind
+  `wait_until(n1.hub_id == "n1" and n2.hub_id == "n1")` — same node, no fix.
+- `test_meshcore_hub.py` A3: `assert n0.is_hub and not n1.is_hub and not n2.is_hub`
+  runs after `wait_until(all(n.hub_id == "n0"))`; `is_hub` is derived from the same
+  node's already-waited `hub_id`, no fix.
+- `test_meshcore_hub.py` A5: the debounce checks assert `n1`/`n2` `hub_id` after both
+  were waited on; `assert returned.hub_id == "n0"` is safe because `returned` is the
+  newly elected hub and `_handle_hub_changed` sets its own `_current_hub`
+  synchronously before any peer can attach to it. No fix.
+- `test_meshcore_hub.py` A7: the `is_hub` list runs after
+  `wait_until(all(n.hub_id == "n0"))`; derived, no fix.
+- `tests/acceptance/test_clipsync_on_meshcore.py` A8: the only immediate checks
+  follow a wait that already covers both nodes; no fix.
+- `tests/acceptance/test_meshcore_exploratory.py`: `nodes[1].hub_id != "n1"` runs after
+  waiting on `nodes[1]`; no fix.
+Only A6 had the cross-node race, so only A6 was edited.
+
+Measurement (`python3 -m pytest -q`, 277 tests): before the probe change, 30/30 clean
+(`env -u PYTHONPATH`) and 10/10 ROS-PYTHONPATH runs passed = 40/40, 0 failures. This is
+the D43 fallback (bare TCP probe + `websockets.server` raised to WARNING) with the A6
+wait applied. The race did not appear in this matrix.
+
+Step 3 was then attempted and **kept**, because it met the owner's gate: 40/40 again
+(30 clean + 10 ROS), and
+`test_probe_against_live_hub_emits_no_warning_or_error` still records no
+WARNING/ERROR/traceback in either environment. `probe_hub` now does a real
+authenticated WebSocket connect and immediate close, with the whole operation bounded
+by `asyncio.wait_for(connect+close, timeout)` (same timeout semantics as before).
+`HubServer` no longer calls `setLevel` on another library's logger; the lifecycle test
+now pins `websockets.server` at `NOTSET` instead of requiring the hack. Residual
+noise, reported rather than hidden: with the hack gone, 19/30 clean runs print a
+pytest capture-stream artifact at ~77% (`--- Logging error --- ... ValueError: I/O
+operation on closed file`) from websockets INFO records hitting a closed capture
+stream (the D44 artifact); 0/10 ROS runs show it, no test fails, and the live-hub
+test itself is quiet. If this artifact is unacceptable, the fallback is to restore
+the D43 logger-level hack and the bare TCP probe.
