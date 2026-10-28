@@ -276,22 +276,46 @@ def run_smoke(workdir: Path) -> None:
         children.append(member_b)
         log(f"member-b starting, clipboard file {clip_b.name} (pid {member_b.proc.pid})")
 
-        first_text = f"smoke text {run_id} from member-a"
-        atomic_write_text(clip_a, first_text)
-        log(f"TEXT-WRITTEN member-a: {first_text!r}")
-
-        arrived = wait_until(
-            lambda: first_text in read_text(clip_b), FIRST_TEXT_TIMEOUT, "first text"
-        )
-        for child in children:
-            if not child_alive(child):
-                raise RuntimeError(
-                    f"{child.name} exited early with code {child.proc.returncode}"
-                )
+        # The relay broadcasts without queueing for clients that have not attached
+        # yet, so a copy made immediately after startup can be sent before the other
+        # member is connected.  Copy again with a fresh value (what a user would do
+        # after noticing nothing arrived) and report every lost attempt.
+        deadline = time.monotonic() + FIRST_TEXT_TIMEOUT
+        attempt = 0
+        arrived: float | None = None
+        while time.monotonic() < deadline:
+            attempt += 1
+            first_text = f"smoke text {run_id} attempt {attempt}"
+            atomic_write_text(clip_a, first_text)
+            log(f"TEXT-WRITTEN member-a: {first_text!r} (attempt {attempt})")
+            remaining = deadline - time.monotonic()
+            slice_timeout = min(2.5, max(0.5, remaining))
+            arrived = wait_until(
+                lambda: first_text in read_text(clip_b), slice_timeout, "first text"
+            )
+            for child in children:
+                if not child_alive(child):
+                    raise RuntimeError(
+                        f"{child.name} exited early with code {child.proc.returncode}"
+                    )
+            if arrived is not None:
+                break
+            log(
+                f"TEXT-RETRY attempt {attempt} was not delivered while the members "
+                "were attaching; copying again"
+            )
         if arrived is None:
             raise RuntimeError(
-                f"text did not reach member-b within {FIRST_TEXT_TIMEOUT:.0f} s"
+                f"text did not reach member-b within {FIRST_TEXT_TIMEOUT:.0f} s "
+                f"and {attempt} attempts"
             )
+        if attempt > 1:
+            log(
+                f"TEXT-NOTE the first {attempt - 1} copy(ies) were lost while the "
+                "members were attaching; a later copy arrived"
+            )
+        else:
+            log("TEXT-NOTE first copy arrived on the first attempt")
         log(f"TEXT-ARRIVED member-b after {arrived - STARTED:0.2f}s (total)")
 
         log("stopping the relay to check member-to-member failover")
