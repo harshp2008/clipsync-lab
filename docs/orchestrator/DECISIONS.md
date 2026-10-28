@@ -237,3 +237,43 @@ implementation, and it never imports or touches the clipboard.
 `main` remains at `73b58b3`. Job worktree and branch were removed with
 `agy_cleanup` (no force). Per the request, the merge of `integration/resilience` into
 `main` is **not** performed; the command is in `REPORT.md` and NEEDS_HUMAN H11.
+
+## D28 — Coordination phase 1: GATED contract from `main` (13:05 IST)
+The deliverable is pure, exactly-specifiable logic, so this run used GATED again.
+`integration/resilience` was confirmed **already merged** into `main` (`4c85114`), so
+`integration/coordination` was cut from `main` at `d429f66` (the design-doc commit) and
+`main` was not touched. The frozen contract is `tests/acceptance/test_coordination.py`
+at **`e148a06`**: 12 test functions covering the 13 numbered scenarios (item 12 is the
+required comment inside scenario 6, not a separate test) plus an AST test that fails if
+any module under `meshcore/` imports an app package. Quota before the start was **100%
+weekly / 100% 5h**, above the standing 10%/15% floor.
+
+## D29 — Job accepted, with a gate cleanup for pytest import mode (13:15 IST)
+Job `a7181258-a6de-48e3-a7b8-cd7df10a697b` ("meshcore coordination phase 1 pure core",
+base `e148a06`, 4 commits, ~7.3 min, audit passed). The wrapper's first verify failed
+with a pytest **import-file mismatch**: the job's own `tests/test_coordination.py`
+collided by basename with the frozen `tests/acceptance/test_coordination.py`. The job
+fixed it by adding `--import-mode=importlib` to `pyproject.toml`; verify then passed
+**253 tests** on attempt 2. I accepted the implementation, but at the gate I reverted
+that global pytest-config change and renamed the two job unit tests to
+`tests/test_meshcore_coordination.py` / `tests/test_meshcore_messages.py`, leaving
+`pyproject.toml` with only the required `packages = ["clipsync", "meshcore"]` change.
+Reason: the request scoped `pyproject` to packaging, the project already relies on
+unique test basenames, and default prepend mode keeps the existing suite's import
+behaviour unchanged. Cost measured by the wrapper: **0.36 weekly / 1.27 5h points**.
+
+## D30 — Coordination interfaces where the spec allowed more than one shape
+The design doc fixes the behaviour but not every Python signature; these are the
+choices frozen into the acceptance tests and recorded here rather than silently
+guessed: `HubTracker(clock)` adopts the **first** non-None candidate immediately (a
+"change" needs the previous hub, so boot is not delayed; the 30 s debounce applies to
+every later change); `probe_hub` probes the given `devices` list top-down and does not
+special-case `self_id` (callers may exclude themselves; if they are listed and their
+ping answers, self is a normal first responder), and only `(self_id, False)` is
+returned when no ping answers; `duplicate_temp_ranks` returns
+`(device_id, device_id)` pairs (ids sorted inside a pair, list sorted by rank then id),
+not `Device` objects; `encode_hello` returns a JSON-able `dict` and always emits
+`will_hub` while omitting `perm`/`temp_rank` when None, and `decode_hello` accepts any
+Mapping. Phase 1 deliberately keeps the device_id tiebreak for colliding temp ranks;
+the "larger fragment is the reference" alternative (design §12.2) is **not**
+implemented and needs phase-2 fragment membership.

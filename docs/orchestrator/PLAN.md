@@ -328,3 +328,87 @@ clipboard.
 - 11:10 — docs updated (`README`, `DECISIONS`, `NEEDS_HUMAN`, this log, `REPORT`).
   **`main` is untouched; merging `integration/resilience` into `main` is left to the
   human** (see NEEDS_HUMAN H11).
+
+# meshcore coordination phase 1 — 2026-10-28 13:05 IST
+
+**Workflow: GATED.** The deliverable is pure, test-checkable logic, so I write and
+commit the contract + acceptance tests first (`tests/acceptance/test_coordination.py`,
+frozen during the job); one agy job then makes them pass without touching
+`tests/acceptance/`. Gate = empty `git diff <contract-commit> -- tests/acceptance`,
+`agy_review` + reading the diff, merge into `integration/coordination`, then the
+acceptance suite and the full suite run by me. At most one fix job.
+
+- **Base commit: `d429f66`** (`main`, "docs: add meshcore/clipsync coordination design
+  v2.1"). Branch `integration/coordination` cut from it. **`main` is never touched or
+  merged into** this run; the merge is left to the human. `integration/resilience` is
+  already merged into `main` (`4c85114`).
+- Quota before the run: Gemini weekly **100%**, 5h **100%**; re-check with `agy_usage`
+  immediately before the start. Floor from the standing guidance: 10% weekly / 15% 5h.
+- Contract: `docs/design/coordination-v2.md` sections 0, 1, 3, 4, 6. Build **only** the
+  pure coordination core: `meshcore/coordination.py`, `meshcore/messages.py`, a
+  `meshcore/__init__.py`, and add `meshcore` to `pyproject.toml` packages. No website,
+  panel, Android, channels, transport or network behaviour. No clipboard, no I/O, no
+  real clock, no sockets, no sleeps.
+
+## API contract (frozen by the acceptance tests)
+
+- `Device(device_id, name, perm=None, temp_rank=None, will_hub=True)`.
+- `sort_key(d)` = `(has_perm ? 0 : 1, perm ?? 0, has_temp ? 0 : 1, temp_rank ?? 0,
+  device_id)`; `order(devices)` sorts by it.
+- `pick_hub(devices, reachable_ids)` -> `(hub_id | None, forced)`; pure knowledge
+  version.
+- `probe_hub(devices, ping, timeout, self_id)` -> `(hub_id, forced)`; live version,
+  probes the order top-down with `ping(device_id, timeout) -> bool`, skipping
+  `will_hub=False`, first responder wins, all-declining forces the first, nobody
+  responds -> `(self_id, False)`.
+- `HubTracker(clock)` with `observe(candidate_hub)` and the `current_hub` property;
+  a change needs the same candidate for 30 s, flapping resets the timer,
+  `observe(None)` is ignored.
+- `Hello(device_id, name, perm=None, temp_rank=None, will_hub=True)`,
+  `encode_hello(hello) -> dict`, `decode_hello(mapping) -> Hello`; absent optional
+  fields mean unranked with `will_hub=True`.
+- `duplicate_temp_ranks(devices)` -> list of `(device_id, device_id)` pairs with equal
+  `temp_rank` and no `perm`, ids sorted within a pair, list sorted by
+  `(temp_rank, first id)`.
+
+## Deliverables
+
+| Chunk | Owner | Notes |
+|---|---|---|
+| `tests/acceptance/test_coordination.py` (13 scenarios incl. AST dependency rule) | me | frozen during the job |
+| `meshcore/coordination.py` | agy job 1 | GATED |
+| `meshcore/messages.py` | agy job 1 | GATED |
+| `meshcore/__init__.py` + `pyproject.toml` package entry | agy job 1 | GATED |
+| Job's own unit tests | agy job 1 | must not edit `tests/acceptance/` |
+| Gate: diff check, review, merge, acceptance + full suite | me | |
+| PLAN/DECISIONS/REPORT final updates | me | |
+
+## Gate commands
+
+```bash
+git diff <contract-commit> -- tests/acceptance   # must be empty
+python3 -m pytest -q tests/acceptance            # must pass
+python3 -m pytest -q                             # full suite must pass
+```
+
+## Status log
+
+- 13:05 — run start; branch `integration/coordination` cut from `main` (`d429f66`).
+  Baseline full suite on the branch: **230 passed**. `integration/resilience` already
+  merged into `main`.
+- 13:07 — contract committed at **`e148a06`** (12 acceptance tests + PLAN); frozen from
+  here on. `agy_usage` immediately before the start: weekly **100%** / 5h **100%**.
+- 13:07 — **job `a7181258-a6de-48e3-a7b8-cd7df10a697b` started**, verify
+  `python3 -m pytest -q`, max 30 min. First wrapper verify (attempt 1) failed on a
+  pytest basename collision between the job's unit tests and the frozen acceptance
+  file; the job added `--import-mode=importlib` and verify passed with **253 tests**
+  on attempt 2. 4 commits, ~7.3 min, audit passed, plan 7/7.
+- 13:15 — **gate passed**: `git diff e148a06 -- tests/acceptance` empty; job diff read
+  in full (only `meshcore/`, its two unit-test files and `pyproject.toml`). Merged with
+  `--no-ff` into `integration/coordination` (`5dd39ad`). I reverted the global
+  `--import-mode=importlib` and renamed the job unit tests to unique basenames
+  (`e201e56`), so `pyproject.toml` gains only the `meshcore` package. Acceptance
+  **78 passed**, full suite **253 passed**; frozen file alone **12 passed**.
+- 13:16 — docs updated; `agy_cleanup` removes the job worktree/branch without force.
+  **`main` remains untouched; merging `integration/coordination` into `main` is left to
+  the human** (see NEEDS_HUMAN H13).

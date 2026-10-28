@@ -550,3 +550,50 @@ python3 -m pytest -q                     # expected: 230 passed
   (the file name is the message id, so duplicates overwrite the same image file).
 - `clipsync-peer` is a CLI tool, not a long-running phone substitute; the Android
   client and remote relay deployment remain H3/next-run work.
+
+# meshcore coordination phase 1 — 2026-10-28
+
+**Branch:** `integration/coordination`, cut from `main` at `d429f66`. **`main` is
+untouched**; the merge is left to the owner (NEEDS_HUMAN H13).
+
+## Done
+
+- Frozen contract at **`e148a06`**: `tests/acceptance/test_coordination.py` (12 tests
+  covering all 13 numbered scenarios; #12 is the required comment inside scenario 6).
+- `meshcore/` new top-level package: `coordination.py` (`Device`, `sort_key`, `order`,
+  `pick_hub`, `probe_hub`, `HubTracker`, `duplicate_temp_ranks`) and `messages.py`
+  (`Hello`, `encode_hello`, `decode_hello`). Pure functions; clock and ping injected;
+  no I/O, sockets, real clock, sleeps or app imports.
+- `pyproject.toml`: `meshcore` added to `packages` (nothing else).
+- Job unit tests: `tests/test_meshcore_coordination.py`, `tests/test_meshcore_messages.py`.
+- Gate: contract diff empty, `agy_review` audit passed, full diff read, merged
+  `--no-ff`; job worktree/branch cleaned up without force.
+
+## Test counts (mine, on the integration branch)
+
+- Frozen suite alone: **12 passed**.
+- Acceptance: **78 passed**.
+- Full suite: **253 passed** (baseline before this run: 230).
+- `git diff e148a06 -- tests/acceptance`: **empty**.
+
+## Verify
+
+```bash
+cd "/home/harsh/Documents/GITHUB PROJECTS/clipsync-lab"
+git checkout integration/coordination
+git diff e148a06 -- tests/acceptance          # empty
+python3 -m pytest -q tests/acceptance         # 78 passed
+python3 -m pytest -q                          # 253 passed
+# owner-only merge when ready:
+git checkout main && git merge --no-ff integration/coordination
+```
+
+## Not done / risks
+
+- No transport, channels, panel, Android or naming service (phase 2+ by design).
+- `probe_hub` is not yet wired to a real heartbeat/transport; `pick_hub` is the pure
+  knowledge version for tests and the future panel.
+- Fragment membership does not exist, so colliding temp ranks use the device_id
+  tiebreak; the "larger fragment reference" alternative is deferred (design §12.2).
+- `Hello` is defined only in `meshcore.messages`; no existing `clipsync` protocol path
+  was changed, so no hello is on the wire yet.
