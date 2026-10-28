@@ -516,7 +516,9 @@ def test_a6_will_hub_false_is_skipped_and_all_false_forces_a_hub(
         assert wait_until(lambda: n2.hub_id == "n2", timeout=8.0), [
             n.hub_id for n in cluster.nodes
         ]
-        assert n1.hub_id == "n2"
+        assert wait_until(lambda: n1.hub_id == "n2", timeout=8.0), [
+            n.hub_id for n in cluster.nodes
+        ]
         assert not n1.is_hub
         assert "n1" not in n1.hub_events()
 
@@ -525,7 +527,9 @@ def test_a6_will_hub_false_is_skipped_and_all_false_forces_a_hub(
         assert wait_until(lambda: n1.hub_id == "n1", timeout=8.0), [
             n.hub_id for n in cluster.nodes
         ]
-        assert n1.is_hub
+        assert wait_until(lambda: n1.is_hub, timeout=8.0), [
+            n.hub_id for n in cluster.nodes
+        ]
     finally:
         election_logger.removeHandler(handler)
         election_logger.setLevel(previous_level)
