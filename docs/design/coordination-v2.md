@@ -70,10 +70,39 @@ Perm always before temp; a temp_rank of 0 never beats a perm; device_id is only 
 
 ## 5. Transport and discovery (works with no internet)
 
-- Each device tries, in order: its tailnet address, then direct LAN addresses (mDNS / last-known local IP). A phone hotspot or plane Wi-Fi with no internet works without Tailscale.
-- Election, failover and the channels never need the internet. Only the optional naming service does.
-- No link at all between devices: apps stay local, state channels merge when a link exists.
-- Test to run for real: phone hotspot, mobile data off, laptop connected; confirm sync and a hub failover.
+Implemented in phase 2b; the detailed contract is `docs/design/meshcore-lan.md`.
+
+- A peer may carry several addresses (`tailnet`, `lan`, `hotspot`, `static`). They are
+  tried in that fixed order, config order inside a kind; an old single `address` is one
+  `static` fallback. Duplicates are removed. The last address that answered a real
+  authenticated handshake is remembered per peer id (host:port only) and tried first
+  while it is still a candidate. A dead address costs at most its short per-address
+  timeout (default 2 s), so a live address later in the list is not delayed by it.
+- LAN discovery is opt-in (`discovery = true`, default off): each member sends a small
+  HMAC-authenticated UDP beacon every 5 s to the subnet broadcast address, to
+  `255.255.255.255` and to a fixed multicast group, and listens on a fixed UDP port
+  (`discovery_port`, default 8766). A beacon carries the group id, device id,
+  WebSocket port, a timestamp and the mac; a wrong-group, bad-mac, stale (>30 s) or
+  unknown-device beacon is ignored and counted. The sender's source IP is the address.
+- Discovery only supplies addresses for device ids already in static `peers`; it never
+  adds a device and never changes ranks, hub choice or membership. An entry is
+  replaced when the IP/port changes and expires after 3 missed beacons (15 s at the
+  default interval). A hub change or an IP change takes effect without restarting the
+  daemon: the next probe stores the new address and the next link connect uses it.
+- Election, failover and the channels never need the internet. Only the optional
+  naming service does. A phone hotspot or plane Wi-Fi with no internet works without
+  Tailscale.
+- Limits: client isolation on public Wi-Fi/airports blocks broadcast and multicast, so
+  discovery cannot work there (static/tailnet addresses still can); a hotspot works
+  only if it does not isolate clients; two devices on different networks with no
+  internet cannot reach each other. The beacon itself is unencrypted: someone on the
+  same L2 sees the group id, device id and port, but without the group token cannot
+  read/forge valid beacons; replay is limited to the 30 s window.
+- No link at all between devices: apps stay local, state channels merge when a link
+  exists.
+- Test to run for real: phone hotspot, mobile data off, laptop connected; confirm sync
+  and a hub failover. `scripts/lan_check.py` checks the discovery leg by hand; see the
+  README section "Testing without internet".
 
 ## 6. Frame envelope and messages
 
@@ -136,6 +165,7 @@ Layout (same repo for now): `meshcore/` (coordination.py, messages.py, later tra
 
 1. **Now:** `meshcore.coordination`: sort key, hub pick/probe, debounce, hello message. Pure and tested. No website, no panel.
 2. **Now:** hub = the existing relay, elected; hello/roster over the wire; LAN fallback; state channel (the existing clipboard register moves behind it).
+2b. **Done (phase 2b, branch `integration/lan`):** multi-address peers, fixed try-in-order with remembered `last_good`, and opt-in authenticated LAN discovery (`discovery: true`, default off) with a stdlib UDP beacon. Contract and limits: `docs/design/meshcore-lan.md`; manual test kit: `scripts/lan_check.py`.
 3. **Next:** Android app (the part that can fail).
 4. Panel read-only, then temp_rank writes; routing preferences.
 5. Event channel + notifications app.

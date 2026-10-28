@@ -154,8 +154,8 @@ class Discovery:
     def __init__(self, *, group_id, device_id, token, port,
                  socket: DiscoverySocket, peers: Iterable[str],
                  clock=time.monotonic, interval=DEFAULT_BEACON_INTERVAL,
-                 max_age=DEFAULT_MAX_AGE, broadcast_addresses=None,
-                 logger=None) -> None
+                 max_age=DEFAULT_MAX_AGE, discovery_port=DEFAULT_DISCOVERY_PORT,
+                 broadcast_addresses=None, logger=None) -> None
     def start(self) -> None
     def stop(self, timeout: float = 2.0) -> None     # idempotent, bounded join
     def announce(self) -> None
@@ -179,7 +179,9 @@ class Discovery:
   default interval), checked lazily by `addresses_for` and by the thread. A replaced
   entry starts a fresh expiry window; the old address is gone immediately.
 - `broadcast_addresses` is an injectable list for tests; when `None` it is
-  `local_broadcast_addresses()`. The addresses actually used are logged once at INFO.
+  `local_broadcast_addresses()`. Beacons are sent to `discovery_port` (the
+  configured UDP port, default 8766); the beacon's own `port` field is the node's
+  WebSocket port. The addresses actually used are logged once at INFO.
   A send `OSError` is logged once at WARNING and the loop keeps running.
 
 ## Configuration
@@ -201,7 +203,7 @@ class MeshConfig:
 
 `PeerConfig` validates that at least one of `address`/`addresses` is present, that
 every entry is an `Address`, and keeps `addresses` as a tuple. `MeshConfig` validates
-the new fields with the existing validators; `discovery_port` is 0..65535, the
+the new fields with the existing validators; `discovery_port` is 1..65535, the
 interval is positive, `address_timeout` is positive. The relay role may set these
 fields but does not run discovery (it has no peers); no old config changes behaviour.
 
@@ -254,6 +256,32 @@ addition to (or, for new configs, instead of) `address`; each entry is
 only. `meshcore` still never imports `clipsync`. No new dependency is added to
 `pyproject.toml` (`cryptography` and `websockets` stay the only ones).
 
+## Limits and security notes
+
+- **Client isolation.** Public Wi-Fi and many airports isolate clients: broadcast,
+  multicast and direct peer traffic are blocked. Discovery cannot work there; a
+  static/LAN address can only work if the network permits direct traffic, and the
+  tailnet path needs internet/Tailscale (out of scope for this phase).
+- **Hotspots.** A phone hotspot works only if it does not isolate its clients; most
+  personal hotspots do not. On a re-lease the address changes, which is exactly what
+  discovery handles, but both devices must stay on the same hotspot.
+- **Different networks.** Two devices on different networks with no internet cannot
+  reach each other. No amount of LAN discovery changes that.
+- **What a beacon reveals.** Anyone on the same L2 sees the group id, device id,
+  WebSocket port and the timestamp, plus the sender IP. The payload is not encrypted.
+  Without the group token they cannot produce or verify a valid mac, so they cannot
+  join the address book; wrong-group and bad-mac beacons are ignored and counted.
+- **Replay.** A captured beacon can be replayed for at most 30 s (`|now - ts| <= 30`)
+  and only to move an already-known peer's address; it cannot add devices, change
+  ranks or change the hub.
+- **Broadcast load.** Every member sends a few small datagrams every 5 s to the
+  broadcast address(es) and one multicast group. On a large/noisy network that is a
+  small but non-zero broadcast load. The beacon is not routed beyond the L2 segment
+  (multicast TTL 1).
+- **Token strength.** The token is the group secret already used for the WebSocket
+  handshake; a weak token weakens both. Tokens and keys never enter the last_good
+  file (only `host:port`).
+
 ## Real-world test kit (not pytest) and docs
 
 `scripts/lan_check.py` uses only the stdlib (plus `meshcore.discovery`), is runnable
@@ -272,7 +300,4 @@ PASS, 1 on FAIL. The README section "Testing without internet" documents the hot
 procedure, the expected result and what to report.
 
 `docs/design/coordination-v2.md` §5 is updated to this behaviour and §13 marks 2b;
-this document is the detailed reference. `docs/design/meshcore-lan.md` also records
-the limits: client isolation on public Wi-Fi/airports blocks broadcast and multicast;
-a hotspot works only if it does not isolate clients; two devices on different
-networks with no internet cannot reach each other.
+this document is the detailed reference.
