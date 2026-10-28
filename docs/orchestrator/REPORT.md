@@ -869,3 +869,129 @@ PYTHONPATH=/opt/ros/jazzy/opt/gz_sim_vendor/lib/python:/opt/ros/jazzy/opt/sdform
 ```
 
 Merge when ready (owner, H18): `git checkout main && git merge --no-ff integration/groups`.
+
+---
+
+# Phase 2b — LAN transport and discovery (GATED)
+
+Status: **done on `integration/lan`**, never merged into `main` by this run. Owner
+merge is H19. Phase 2b of `docs/design/coordination-v2.md` §5; the frozen contract is
+`docs/design/meshcore-lan.md`; the manual kit is `scripts/lan_check.py`.
+
+## What was built
+
+- `meshcore/addressing.py`: `Address` (tailnet/lan/hotspot/static), `parse_address`,
+  pure `ordered_addresses(peer, discovered, last_good)` (fixed kind order, config order
+  within a kind, discovered LAN merged, `host:port` dedupe, `last_good` first only
+  while present), and atomic `LastGoodStore` (`host:port` per device only, corrupt/
+  missing/unwritable/monkeypatched-rename all degrade to empty, never raises).
+- `meshcore/discovery.py`: stdlib UDP beacon (`{v, group, device_id, port, ts, mac}`,
+  HMAC-SHA256 keyed by the group token, 30 s replay window), `DiscoverySocket` seam,
+  real broadcast + multicast + `255.255.255.255` socket, injectable
+  `local_broadcast_addresses()`, and `Discovery` with a bounded/idempotent
+  `meshcore-discovery` thread, peer-only address book, 3-missed-beacon expiry, IP/port
+  replacement, and ignored/accepted counters. Default off; member-only.
+- `meshcore/config.py` / `clipsync/config.py`: per-peer `addresses`, `discovery`,
+  `discovery_port`, `state_dir`; old TOML files and the old single `address` keep
+  working exactly. `address` may be empty only when `addresses` is non-empty.
+- `meshcore/node.py`: `probe_url` and `discovery_socket_factory` seams,
+  `discovery`/`connection_url` properties, ordered per-address probe with the
+  election budget, ordered Link connect with `connect_timeout`, `last_good` refresh,
+  discovery start/stop around the actual bound hub port, and the extended
+  non-loopback/e2e-key security gate.
+- `scripts/lan_check.py`: `listen` / `probe`, both send and listen, per-beacon
+  source/IP/device/port output, time to first sighting, 20 s PASS/FAIL, stdlib only.
+- Docs: `docs/design/meshcore-lan.md`, coordination-v2 §5/§13, README "Testing
+  without internet".
+
+## Branch, commits and gate
+
+- Branch `integration/lan`, cut from `main` `0944778` (289 tests); `main` untouched.
+- Frozen contract/tests: `a07187a` (contract + 11 L-tests); amended harness
+  `7f2a178`; final test freeze `40af196`.
+- One agy job `0f813431-5738-4c63-a168-f0cfda1db90b`, base `a07187a`, branch
+  `agy/phase2b-lan-addresses-and-discovery-08639ee6`, 5 normal commits + an accepted
+  `agy: checkpoint ...` commit; `agy_review` audit passed, no denials. It ended
+  `needs_review`/`plan_incomplete` after verify timed out at 900 s (`rc=124`, `.F..F`).
+- Job gate: `git diff a07187a 7c51ade -- tests/acceptance` is **empty** (0 lines).
+  Merged at `49d708e`. The known agy `invalid_commit_message` bug did **not** recur.
+- Post-merge owner fixes: probe token binding, discovery UDP port, clipsync surface,
+  socket cleanup, `~` expansion, plus the documented test mechanics in D54 / H20.
+- `git diff 40af196 -- tests/acceptance` is empty (final freeze).
+
+## Test evidence (2026-10-29)
+
+| Check | Result |
+|---|---|
+| Baseline before phase 2b | 289 passed (`main` `0944778`) |
+| `tests/acceptance/test_meshcore_lan.py` × 20 | **20/20, 11 passed each** (1.3–3.0 s) |
+| Full suite × 5, `env -u PYTHONPATH` | **5/5, 300 passed** (34.6–36.5 s) |
+| Full suite × 5, ROS PYTHONPATH from the request | **5/5, 300 passed** (35.2–35.9 s) |
+| `Logging error` / `Task was destroyed` | **0** in all 30 gate runs (stdout+stderr scanned) |
+
+L11 is marked `exploratory` (real timing / loopback proxy) and passed in every run;
+no exploratory failure was papered over.
+
+## agy usage and effort
+
+- Before the job: Gemini Models weekly **96.76%**, 5 h **96.71%** remaining (above the
+  10%/15% floor).
+- After the job: weekly **95.84%**, 5 h **93.46%** remaining (job reported 0.93 weekly
+  / 3.25 five-hour points). One start attempt was rejected by the wrapper's verify
+  validator (`env -u` prefix not allowed) before any work; no quota spent on it.
+- Effort: **one** agy implementation job (no fix job); I took over after its verify
+  timeout. Orchestration steps in this session: ~110 (waits, job review, takeover,
+  gate runs and docs); the harness sampled step 77 mid-run.
+
+## Security notes (same-L2 observer)
+
+- A beacon is **unencrypted metadata**: group id, device id, WebSocket port, timestamp
+  and sender IP. Anyone on the same L2 can read those and see traffic volume/timing.
+- They **cannot** read app payloads (E2E key separate), **cannot forge** a beacon
+  without the group token (HMAC-SHA256), and a **wrong-group or wrong-mac** datagram is
+  ignored and counted. A replayed beacon is accepted at most 30 s after its timestamp
+  and can only move an already-known peer's address; it cannot add a device, change a
+  rank, roster membership or the hub.
+- Discovery is **off by default** and member-only; a relay never runs it.
+- **Broadcast storms:** each member sends a few small datagrams every 5 s; multicast
+  TTL is 1, so it stays on the L2 segment. This is small but non-zero broadcast load on
+  a large/noisy network.
+- **Client isolation** on public Wi-Fi/airports blocks broadcast/multicast and often
+  direct peer traffic; a hotspot works only if it does not isolate clients. Two
+  devices on different networks with no internet cannot reach each other.
+- The token still crosses `ws://` in cleartext without TLS (H15); discovery adds no
+  transport encryption and the last_good file contains only `host:port`.
+
+## What could not be verified without real hardware
+
+- The phone-hotspot procedure, real broadcast/multicast delivery, client isolation,
+  and a real IP re-lease on two machines. `scripts/lan_check.py` exists for exactly
+  this; it was syntax/`--help` checked and its beacon/auth/socket logic is covered by
+  the fake-bus tests, but no real UDP broadcast socket was opened in pytest (by rule).
+- A real TV-box relay / multi-device deployment; the tests use in-process loopback
+  nodes and an in-memory discovery bus.
+
+## Ambiguities and decisions
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | "Existing tests must pass UNCHANGED" vs G7's hard-coded allowlist, which rejects mandated new files | **Asked owner (H20)**: minimally added `addressing.py`/`discovery.py` to G7's `pure_core`; L10 independently enforces stdlib-only/app-free. No delivery/election assertion touched. |
+| 2 | Frozen L6/L11 proxy harness blocked forever (server never started) | **Decided**: test-harness fix (`serve_forever` thread + join), amended before the job was accepted; no assertion changed. |
+| 3 | L2 exact float comparison | **Decided**: 1e-6 epsilon; still asserts dead cost ≤ one per-address timeout. |
+| 4 | Does `address` stay mandatory when `addresses` is set? | **Decided**: empty only when `addresses` is non-empty; old configs unchanged. |
+| 5 | Order of legacy `address` vs explicit `addresses` within `static` | **Decided**: explicit `addresses` in config order first, legacy `address` as final fallback. |
+| 6 | Should discovery run on a relay? | **Decided**: member-only; relay has no peers and discovery never adds devices. |
+| 7 | UDP `discovery_port = 0`? | **Decided**: reject; require 1..65535 (0 is not a usable fixed destination). |
+| 8 | Expose `discovery_interval`/`address_timeout` in clipsync TOML? | **Decided**: no; clipsync maps exactly the four requested keys, MeshConfig keeps the fields for tests. |
+| 9 | Does an IP change force a reconnect without a failed publish? | **Decided**: a successful probe of the desired hub also re-evaluates the link, so election itself switches; publish still works as a retry path. |
+| 10 | agy job ended with verify timeout | **Decided**: no fix job; gated branch, merged, took over and logged D51–D56 per the run rules. |
+| 11 | Real hotspot/broadcast verification | **Owner (H21)**: needs a second device; procedure and reporting checklist are in README. |
+
+## Exact merge command for the owner (H19)
+
+```bash
+git checkout main && git merge --no-ff -m "merge phase 2b: LAN transport and discovery" integration/lan
+```
+
+Then verify: `env -u PYTHONPATH python3 -m pytest -q` → expected **300 passed**.
+
