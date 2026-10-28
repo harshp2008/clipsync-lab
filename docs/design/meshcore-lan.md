@@ -153,7 +153,7 @@ def create_udp_socket(port: int) -> DiscoverySocket  # real UDP broadcast + mult
 class Discovery:
     def __init__(self, *, group_id, device_id, token, port,
                  socket: DiscoverySocket, peers: Iterable[str],
-                 clock=time.monotonic, interval=DEFAULT_BEACON_INTERVAL,
+                 clock=time.time, interval=DEFAULT_BEACON_INTERVAL,
                  max_age=DEFAULT_MAX_AGE, discovery_port=DEFAULT_DISCOVERY_PORT,
                  broadcast_addresses=None, logger=None) -> None
     def start(self) -> None
@@ -166,6 +166,9 @@ class Discovery:
     @property send_errors: int
 ```
 
+- `clock` is the wall clock used for the beacon `ts`, the 30 s gate and local expiry;
+  `Node` passes `time.time` (the election's monotonic clock is separate), so beacons
+  from devices with independent boot times still compare correctly.
 - Thread name `meshcore-discovery`. `start()` announces once, then announces every
   `interval` seconds and polls the socket in between; `stop()` sets the stop event,
   closes the socket and joins within the bound. `start`/`stop` are idempotent.

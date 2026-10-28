@@ -302,7 +302,7 @@ class Discovery:
         port: int,
         socket: DiscoverySocket,
         peers: Iterable[str],
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.time,
         interval: float = DEFAULT_BEACON_INTERVAL,
         max_age: float = DEFAULT_MAX_AGE,
         discovery_port: int = DEFAULT_DISCOVERY_PORT,

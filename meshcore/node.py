@@ -282,7 +282,9 @@ class Node:
                         port=self._hub.port,
                         socket=sock,
                         peers={p.device_id for p in self._config.peers},
-                        clock=self._clock if self._clock is not None else time.monotonic,
+                        # Discovery timestamps cross devices, so they must be wall
+                        # clock; the election clock is monotonic and stays there.
+                        clock=time.time,
                         interval=self._config.discovery_interval,
                         discovery_port=self._config.discovery_port,
                         logger=logging.getLogger("meshcore.discovery"),
