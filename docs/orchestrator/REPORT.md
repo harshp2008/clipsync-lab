@@ -648,9 +648,9 @@ public classes and behaviour are preserved.
 ## Step count
 
 The harness step counter read **86** at the last in-session snapshot (14:45 IST); the
-takeover, gate runs and documentation added roughly twenty more model turns, so the
-run finished around **step 105–110**. The agy job itself reported 9/9 checklist steps
-and 11 commits.
+takeover, gate runs and documentation added about thirty more tool steps, so the run
+finished around **step 115**. The agy job itself reported 9/9 checklist steps and 11
+commits.
 
 ## Exploratory failover-copy result
 
