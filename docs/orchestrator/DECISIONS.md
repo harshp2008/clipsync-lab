@@ -499,3 +499,49 @@ operation on closed file`) from websockets INFO records hitting a closed capture
 stream (the D44 artifact); 0/10 ROS runs show it, no test fails, and the live-hub
 test itself is quiet. If this artifact is unacceptable, the fallback is to restore
 the D43 logger-level hack and the bare TCP probe.
+
+## D46 — Groups contract frozen; frozen-A10 allowlist conflict resolved (2026-10-29)
+Branch `integration/groups` from `main` at `3fdcea2`. Contract:
+`docs/design/meshcore-groups.md`. Frozen tests:
+`tests/acceptance/test_meshcore_groups.py` (G1–G7). Decisions made while writing the
+contract (all reversible, inside the repo, and the smaller option):
+
+- **Hub side is the relay.** Only `role="relay"` may set `serve_groups`; a member with
+  `serve_groups` is a config error. This keeps the member's own app receive path from
+  seeing another group's ciphertext and matches the design's "TV box / relay" shape.
+  Members get multi-group service through a relay; their own elected hub remains
+  single-group like phase 2a.
+- **Relay is exempt from the e2e-key requirement.** It has no key by design; requiring
+  one would make an off-loopback relay impossible. Member nodes (and their peer/relay
+  addresses) keep the requirement and the `allow_insecure` warning.
+- **Preferred relay id** is `RelayConfig.device_id`, default `"relay"`; it is synthetic,
+  never a roster member, and must not collide with the node or a peer. `Node.hub_id`
+  is that id while attached, so handback is observable.
+- **Old clients on a multi-group hub** are mapped by token only (they cannot claim a
+  group); they receive raw frames and never a roster. A helloed client whose claimed
+  `group_id` differs from its token's group is closed and never registered.
+- **`encode_hello` omits `group_id` for `"default"`.** The frozen phase-2a hello test
+  asserts the exact old JSON; a default group is indistinguishable from an old client,
+  which is exactly the back-compat requirement.
+- **Frozen-A10 conflict.** The task says to update the AST test in a new file while
+  keeping every existing frozen test unchanged. The frozen A10 test (in
+  `test_clipsync_on_meshcore.py`) treats every meshcore file except `hub.py`/`link.py`
+  as stdlib-only, so a direct `import cryptography` in the required
+  `meshcore/crypto.py` would fail it. Resolution: `crypto.py` imports
+  `cryptography.fernet` lazily via `importlib.import_module(...)` with an explanatory
+  comment; the new explicit-allowlist test (G7) records `cryptography` as permitted for
+  `crypto.py` and still forbids a direct import in every other pure-core file. This is
+  recorded as H17 for the owner to revisit when the frozen A10 test is next touched.
+- **`websockets` is declared** in `pyproject.toml` dependencies (it was used but not
+  declared); `cryptography` was already declared. G7 asserts both.
+- **G7 subprocess** runs the full suite with the new acceptance file ignored (to avoid
+  recursion), in a subprocess with `PYTHONPATH` removed, so the suite really does run
+  the existing 277 tests in a clean shell. The 20x gate is still meaningful: each run
+  re-runs the full suite once.
+
+## D47 — Test-side websockets log level (2026-10-29)
+`tests/conftest.py` installs a session-scoped autouse fixture that sets the
+`websockets` logger to WARNING and restores its level afterwards. The residual noise
+in D45 came from websockets INFO records emitted into pytest's capture stream during
+suspension; suppressing the records before they reach a handler removes it without
+changing production logging or any assertion. G7 pins it in a subprocess.

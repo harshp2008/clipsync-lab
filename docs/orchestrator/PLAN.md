@@ -1,4 +1,25 @@
-# clipsync-lab — Orchestrator Plan
+# clipsync-lab — Groups run plan (GATED)
+
+Workflow: **GATED** — write the contract and the frozen acceptance tests first, commit
+them, then run exactly ONE agy implementation job (max 45 min) that must not touch
+`tests/acceptance`; review the diff, merge into `integration/groups`, and run the
+20x/5+5 gate myself. The owner merges into `main`; this run never does.
+
+Branch: `integration/groups`, cut from `main` at `3fdcea2` (277 tests).
+
+| Step | Owner | Status |
+|---|---|---|
+| Read design, meshcore, clipsync config/crypto, A-tests | me | done |
+| Contract `docs/design/meshcore-groups.md` | me | done |
+| Frozen `tests/acceptance/test_meshcore_groups.py` (G1–G7) + `tests/conftest.py` | me | done |
+| Commit contract/tests, freeze commit hash | me | in progress |
+| One agy implementation job (45 min) | agy | pending |
+| Gate: `git diff <contract> -- tests/` empty, review, merge | me | pending |
+| Acceptance 20x; full suite 5x clean + 5x ROS PYTHONPATH | me | pending |
+| Docs: coordination-v2 Groups section + README two-group setup | me | pending |
+| Report, decisions, needs-human | me | pending |
+
+## Historical plan (earlier runs)
 
 Goal: reliable two-way clipboard sync (text **and** images) between an Ubuntu GNOME
 Wayland laptop and an Android phone; research the landscape, then prototype the
