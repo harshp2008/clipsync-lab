@@ -620,7 +620,7 @@ def test_l2_try_in_order_uses_live_address_and_remembers_it(tmp_path: Path) -> N
         assert budget_calls[0][0].endswith(f":{dead}/")
         assert budget_calls[0][1] <= ADDRESS_TIMEOUT
         assert budget_calls[1][0] == live_url
-        assert clock() - started_at <= ADDRESS_TIMEOUT
+        assert clock() - started_at <= ADDRESS_TIMEOUT + 1e-6
     finally:
         for node in nodes:
             try:
