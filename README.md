@@ -150,6 +150,24 @@ engine echo-loop/dedup/ordering/reconnect, the loopback relay, daemon backoff/
 reconnect resilience, the peer command, and the daemon/config/CLI wiring. Config/CLI
 tests use fake clipboards and a canned `CommandRunner`.
 
+The meshcore election probe is a real authenticated WebSocket connect followed by an
+immediate close, bounded by the configured `probe_timeout`; it does not change another
+library's logger level. A6 waits (up to 8 s) for a non-hub node to attach to the new
+hub before asserting its `hub_id`, so a slow attach is no longer a flake.
+
+### Running in a ROS-sourced shell
+
+The suite also passes with a ROS 2 Jazzy environment sourced. ROS auto-loads the
+`launch_testing` pytest plugin, which imports `launch.logging` and installs
+`LaunchLogger` as the global logger class; that class sets `propagate = False` on
+every logger created after it loads. As a result, pytest's `caplog` fixture sees no
+records from those loggers. The suite therefore does not rely on `caplog` for
+logging assertions (the forced-hub check attaches a handler directly to the
+`meshcore.election` logger). If a future test needs `caplog`, either run with
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` or disable both ROS plugins with
+`-p no:launch_testing -p no:launch_ros` (disabling only the first breaks the second,
+which needs its hooks).
+
 ## Safety
 
 - Tests never read or write the real clipboard; `WlClipboardBackend` is implemented

@@ -410,3 +410,92 @@ mesh; the hub forwards opaque bytes, so the optional clipsync Fernet key still
 protects payloads end to end, but without it the hub can read clipboard frames. Treat
 off-loopback binding as trusted-network only until a TLS/reverse-proxy phase. This is
 recorded in NEEDS_HUMAN H15 and the REPORT security note.
+
+## D43 — A6 logging assertion and meshcore log noise (2026-10-28 20:20 IST)
+The A6 behaviour was correct: the forced-hub WARNING is emitted and appears in the
+captured stderr. The failure was in the test harness, not the contract. With a ROS
+Jazzy shell, `launch_testing` (auto-loaded by pytest) imports `launch.logging`, whose
+`LaunchLogger.__init__` sets `propagate = False` and whose module calls
+`logging.setLoggerClass(LaunchLogger)`. Every logger created after that point (here
+`meshcore.election`) is a `LaunchLogger`, so its records never propagate to
+`caplog`'s root handler. Bisection: `-p no:launch_testing` removes the failure;
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` passes. Therefore A6 now attaches a small
+`logging.Handler` to `meshcore.election` for the duration of the forced-hub window and
+removes it in a `finally`; the asserted behaviour is unchanged (a WARNING containing
+"forced" and "n1"). No other test uses `caplog` (grep confirms only A6 did).
+
+For the unrelated end-of-run noise: websockets logs one INFO line per probe/open/
+close. Election liveness is a bare TCP connect, which makes the server log a failed
+HTTP handshake ("connection failed (400 Bad Request)") every probe. A real WebSocket
+(or even HTTP) request was tried first, but it makes the hub's event loop do work on
+every election round; that extra latency widened a pre-existing race in the frozen A6
+test from ~10-15% to ~45% failures in 20 local runs. Because the frozen test must stay
+unchanged, this is the documented fallback: `HubServer` raises the `websockets.server`
+logger to WARNING at import, so the per-connection INFO chatter (including the failed
+handshake) never reaches logs or pytest's capture stream. `probe_hub` keeps the bare
+TCP connect with the same timeout. `HubServer.stop()` now joins with a bounded timeout
+and leaves the handle for a retry if it does not finish, instead of blocking forever.
+
+## D44 — No thread leak found; lifecycle test added (2026-10-28 20:20 IST)
+A per-test teardown check (thread snapshots at `pytest_runtest_setup`) and a
+`pytest_sessionfinish` snapshot found no surviving meshcore threads: every Node/
+HubServer created by the tests is stopped, and `stop()` joins on the normal path. The
+visible "I/O operation on closed file" came from background threads logging during
+pytest's capture-suspension windows, amplified by a probe-driven INFO record every
+20 ms, not from a leaked thread. `tests/test_meshcore_lifecycle.py` now pins the
+lifecycle contract: start/stop (twice) leaves no `meshcore-hub-server` or
+`meshcore-election` thread, the probe against a live hub produces no WARNING/ERROR
+record from the `websockets`/`meshcore` loggers, and a dead port still fails within
+the probe timeout.
+
+## D45 — A6 harness race fixed; logger hack replaced by a real probe (2026-10-28 22:40 IST)
+The owner approved the frozen-test edit recorded as H16: A6's failure was a harness
+race, not a contract flaw. After `n0.stop()`, the test waited only for
+`n2.hub_id == "n2"` and then asserted `n1.hub_id == "n2"` immediately, but `n1` may
+not have attached to the new hub yet. Both immediate assertions in
+`test_a6_will_hub_false_is_skipped_and_all_false_forces_a_hub` are now
+`wait_until(..., timeout=8.0)` with the file's existing failure-message style
+(`[n.hub_id for n in cluster.nodes]`): the cross-node `n1.hub_id == "n2"` after the
+first stop, and `n1.is_hub` after the second stop (the second wait already covered
+`n1.hub_id`, but the owner asked for its immediate assertion to be made a
+wait too). Nothing asserted was removed or weakened; `assert not n1.is_hub` stays
+immediate because it is checked after the race window is closed.
+
+Audit of the same pattern in every other frozen acceptance test (immediate
+`hub_id`/`is_hub` assertion on a node that was not the one just waited for):
+- `tests/acceptance/test_meshcore_hub.py` A0/A2: `assert n1.is_hub` sits behind
+  `wait_until(n1.hub_id == "n1" and n2.hub_id == "n1")` — same node, no fix.
+- `test_meshcore_hub.py` A3: `assert n0.is_hub and not n1.is_hub and not n2.is_hub`
+  runs after `wait_until(all(n.hub_id == "n0"))`; `is_hub` is derived from the same
+  node's already-waited `hub_id`, no fix.
+- `test_meshcore_hub.py` A5: the debounce checks assert `n1`/`n2` `hub_id` after both
+  were waited on; `assert returned.hub_id == "n0"` is safe because `returned` is the
+  newly elected hub and `_handle_hub_changed` sets its own `_current_hub`
+  synchronously before any peer can attach to it. No fix.
+- `test_meshcore_hub.py` A7: the `is_hub` list runs after
+  `wait_until(all(n.hub_id == "n0"))`; derived, no fix.
+- `tests/acceptance/test_clipsync_on_meshcore.py` A8: the only immediate checks
+  follow a wait that already covers both nodes; no fix.
+- `tests/acceptance/test_meshcore_exploratory.py`: `nodes[1].hub_id != "n1"` runs after
+  waiting on `nodes[1]`; no fix.
+Only A6 had the cross-node race, so only A6 was edited.
+
+Measurement (`python3 -m pytest -q`, 277 tests): before the probe change, 30/30 clean
+(`env -u PYTHONPATH`) and 10/10 ROS-PYTHONPATH runs passed = 40/40, 0 failures. This is
+the D43 fallback (bare TCP probe + `websockets.server` raised to WARNING) with the A6
+wait applied. The race did not appear in this matrix.
+
+Step 3 was then attempted and **kept**, because it met the owner's gate: 40/40 again
+(30 clean + 10 ROS), and
+`test_probe_against_live_hub_emits_no_warning_or_error` still records no
+WARNING/ERROR/traceback in either environment. `probe_hub` now does a real
+authenticated WebSocket connect and immediate close, with the whole operation bounded
+by `asyncio.wait_for(connect+close, timeout)` (same timeout semantics as before).
+`HubServer` no longer calls `setLevel` on another library's logger; the lifecycle test
+now pins `websockets.server` at `NOTSET` instead of requiring the hack. Residual
+noise, reported rather than hidden: with the hack gone, 19/30 clean runs print a
+pytest capture-stream artifact at ~77% (`--- Logging error --- ... ValueError: I/O
+operation on closed file`) from websockets INFO records hitting a closed capture
+stream (the D44 artifact); 0/10 ROS runs show it, no test fails, and the live-hub
+test itself is quiet. If this artifact is unacceptable, the fallback is to restore
+the D43 logger-level hack and the bare TCP probe.

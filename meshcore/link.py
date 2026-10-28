@@ -25,6 +25,7 @@ from meshcore.messages import (
 __all__ = [
     "Link",
     "LinkError",
+    "probe_hub",
     "relay_url",
 ]
 
@@ -36,6 +37,33 @@ class LinkError(Exception):
 def relay_url(port: int, host: str = "127.0.0.1") -> str:
     """Return the WebSocket URL for the given host and port."""
     return f"ws://{host}:{port}/"
+
+
+def probe_hub(url: str, token: str, timeout: float) -> bool:
+    """Return True when the hub answers an authenticated handshake within ``timeout``.
+
+    The probe performs a real WebSocket connect and immediately closes it, so
+    the hub never sees an invalid upgrade and does not log a failed handshake
+    for every election round. The whole operation is bounded by ``timeout``, so
+    the election's probe-timeout semantics are unchanged. Kept here so the
+    probe has one named seam and its timeout is easy to test.
+    """
+    async def _connect_and_close() -> None:
+        ws = await websockets.connect(
+            url,
+            extra_headers={"Authorization": f"Bearer {token}"},
+            max_size=DEFAULT_MAX_FRAME_BYTES,
+            ping_interval=None,
+            open_timeout=timeout,
+            close_timeout=timeout,
+        )
+        await ws.close()
+
+    try:
+        asyncio.run(asyncio.wait_for(_connect_and_close(), timeout))
+        return True
+    except Exception:
+        return False
 
 
 def _coerce_frame(frame: Any) -> bytes:
