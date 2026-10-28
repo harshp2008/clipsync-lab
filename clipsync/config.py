@@ -20,7 +20,7 @@ from meshcore.config import GroupConfig, MeshConfig, PeerConfig, RelayConfig
 from meshcore.discovery import DEFAULT_DISCOVERY_PORT
 from .crypto import CryptoError, FernetCodec
 
-__all__ = ["ConfigError", "DaemonConfig", "load_config"]
+__all__ = ["ConfigError", "DaemonConfig", "ensure_no_placeholders", "load_config"]
 
 _ALLOWED_KEYS = frozenset(
     {
@@ -48,6 +48,12 @@ _ALLOWED_KEYS = frozenset(
         "poll_interval",
         "reconnect_delay",
         "connect_timeout",
+        "clipboard_backend",
+        "clipboard_file",
+        "heartbeat",
+        "missed_pongs",
+        "probe_timeout",
+        "debounce",
     }
 )
 
@@ -82,6 +88,12 @@ class DaemonConfig:
     poll_interval: float = 0.5
     reconnect_delay: float = 0.2
     connect_timeout: float = 5.0
+    clipboard_backend: str = "wayland"
+    clipboard_file: str | None = None
+    heartbeat: float = 10.0
+    missed_pongs: int = 3
+    probe_timeout: float = 2.0
+    debounce: float = 30.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.peers, tuple):
@@ -112,6 +124,10 @@ class DaemonConfig:
             state_dir=self.state_dir,
             reconnect_delay=self.reconnect_delay,
             connect_timeout=self.connect_timeout,
+            heartbeat=self.heartbeat,
+            missed_pongs=self.missed_pongs,
+            probe_timeout=self.probe_timeout,
+            debounce=self.debounce,
         )
 
     def uses_meshcore(self) -> bool:
@@ -547,6 +563,54 @@ def load_config(path: str | Path) -> DaemonConfig:
             raise ConfigError("'state_dir' must be a non-empty string")
         state_dir = val.strip()
 
+    # clipboard backend (default stays the real Wayland backend)
+    clipboard_backend = "wayland"
+    if "clipboard_backend" in data and data["clipboard_backend"] is not None:
+        val = data["clipboard_backend"]
+        if not isinstance(val, str) or val.strip() not in ("wayland", "file"):
+            raise ConfigError(
+                f"'clipboard_backend' must be 'wayland' or 'file', got {val!r}"
+            )
+        clipboard_backend = val.strip()
+
+    clipboard_file = None
+    if "clipboard_file" in data and data["clipboard_file"] is not None:
+        val = data["clipboard_file"]
+        if not isinstance(val, str) or not val.strip():
+            raise ConfigError("'clipboard_file' must be a non-empty string")
+        clipboard_file = val.strip()
+
+    if clipboard_backend == "file" and clipboard_file is None:
+        raise ConfigError(
+            "'clipboard_backend = \"file\"' requires a non-empty 'clipboard_file'"
+        )
+    if clipboard_backend != "file" and clipboard_file is not None:
+        raise ConfigError(
+            "'clipboard_file' is only valid with 'clipboard_backend = \"file\"'"
+        )
+
+    # meshcore tuning (optional; defaults are production values)
+    heartbeat = 10.0
+    if "heartbeat" in data:
+        heartbeat = _validate_positive_float(data["heartbeat"], "heartbeat")
+
+    missed_pongs = 3
+    if "missed_pongs" in data:
+        val = data["missed_pongs"]
+        if isinstance(val, bool) or not isinstance(val, int) or val < 1:
+            raise ConfigError(f"'missed_pongs' must be an int >= 1, got {val!r}")
+        missed_pongs = val
+
+    probe_timeout = 2.0
+    if "probe_timeout" in data:
+        probe_timeout = _validate_positive_float(data["probe_timeout"], "probe_timeout")
+
+    debounce = 30.0
+    if "debounce" in data:
+        debounce = _validate_positive_float(data["debounce"], "debounce")
+        if debounce <= 0:
+            raise ConfigError("'debounce' must be a positive finite number")
+
     return DaemonConfig(
         device_id=device_id,
         token=token,
@@ -570,4 +634,48 @@ def load_config(path: str | Path) -> DaemonConfig:
         poll_interval=poll_interval,
         reconnect_delay=reconnect_delay,
         connect_timeout=connect_timeout,
+        clipboard_backend=clipboard_backend,
+        clipboard_file=clipboard_file,
+        heartbeat=heartbeat,
+        missed_pongs=missed_pongs,
+        probe_timeout=probe_timeout,
+        debounce=debounce,
     )
+
+
+def ensure_no_placeholders(config: DaemonConfig) -> None:
+    """Reject example-config placeholders before a daemon starts.
+
+    The example files in ``examples/`` intentionally contain obvious
+    ``CHANGE-ME-...`` values.  They still load (so tooling can inspect them), but
+    the CLI calls this function right after :func:`load_config` so a real run fails
+    loudly instead of silently retrying against an unresolvable host or a fake key.
+
+    Raises
+    ------
+    ConfigError:
+        If any secret or address still contains ``CHANGE-ME``.
+    """
+    problems: list[str] = []
+
+    def check(field: str, value: str | None) -> None:
+        if value is not None and "CHANGE-ME" in value:
+            problems.append(field)
+
+    check("token", config.token)
+    check("e2e_key", config.e2e_key)
+    for index, group in enumerate(config.serve_groups):
+        check(f"serve_groups[{index}].token", group.token)
+    if config.relay is not None:
+        check("relay.address", config.relay.address)
+    for index, peer in enumerate(config.peers):
+        check(f"peers[{index}].address", peer.address)
+        for addr_index, address in enumerate(peer.addresses):
+            check(f"peers[{index}].addresses[{addr_index}].host", address.host)
+
+    if problems:
+        raise ConfigError(
+            "configuration still contains the CHANGE-ME placeholder in: "
+            + ", ".join(problems)
+            + "; generate real secrets with scripts/gen_secrets.py and edit the config"
+        )

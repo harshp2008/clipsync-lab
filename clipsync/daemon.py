@@ -19,8 +19,8 @@ import threading
 import time
 from typing import Any, Callable, Sequence
 
-from .clipboard import ClipboardBackend, WlClipboardBackend
-from .config import ConfigError, DaemonConfig, load_config
+from .clipboard import ClipboardBackend, FileClipboardBackend, WlClipboardBackend
+from .config import ConfigError, DaemonConfig, ensure_no_placeholders, load_config
 from .crypto import Codec, FernetCodec
 from .engine import SyncEngine, SyncStats
 from .relay_transport import RelayTransport
@@ -297,8 +297,11 @@ def build_codec(config: DaemonConfig) -> Codec | None:
 
 
 def build_clipboard(config: DaemonConfig) -> ClipboardBackend:
-    """Build the default Wayland clipboard backend."""
-    del config
+    """Build the configured clipboard backend (Wayland unless explicitly file)."""
+    if config.clipboard_backend == "file":
+        if config.clipboard_file is None:
+            raise ValueError("clipboard_backend='file' requires clipboard_file")
+        return FileClipboardBackend(config.clipboard_file)
     return WlClipboardBackend()
 
 
@@ -422,6 +425,7 @@ def main(
     try:
         config_path = Path(args.config).expanduser()
         config = load_config(config_path)
+        ensure_no_placeholders(config)
     except ConfigError as exc:
         sys.stderr.write(f"Configuration error: {exc}\n")
         return 2
@@ -444,13 +448,16 @@ def main(
         make_transport = _make_mesh_transport
     else:
         make_transport = build_transport
-    # On meshcore, meshcore owns payload encryption; clipsync's codec is only for
-    # the legacy single-relay path. An explicitly injected factory still wins.
-    make_codec = codec_factory or (None if mesh_mode else build_codec)
-
     clipboard = make_clipboard(config)
     transport = make_transport(config)
-    codec = make_codec(config)
+    # On meshcore, meshcore owns payload encryption; clipsync's codec is only for
+    # the legacy single-relay path. An explicitly injected factory still wins.
+    if codec_factory is not None:
+        codec = codec_factory(config)
+    elif mesh_mode:
+        codec = None
+    else:
+        codec = build_codec(config)
 
     daemon = ClipboardDaemon(
         config,
