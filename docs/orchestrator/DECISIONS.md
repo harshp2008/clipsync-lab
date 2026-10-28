@@ -596,3 +596,97 @@ Branch `integration/groups`, never merged into `main`.
   event; `--once` starts/stops and returns 0. It never builds a clipboard or codec.
   In mesh mode `codec=None` (meshcore owns encryption); the legacy single-relay path
   keeps the clipsync codec, so no double encryption.
+
+## D51 — Phase 2b agy job outcome (2026-10-29)
+Branch `integration/lan`, cut from `main` `0944778`; frozen contract/tests committed
+as `a07187a` (later amended to `7f2a178` for the proxy-harness fix below). One agy job
+`0f813431-5738-4c63-a168-f0cfda1db90b` (`agy/phase2b-lan-addresses-and-discovery-08639ee6`)
+ran ~27 min, made 5 normal commits plus an `agy: checkpoint ...` commit, audit passed,
+no denials. It ended `needs_review` with `plan_incomplete`; verify ran once and timed
+out at 900 s (`rc=124`, tail `.F..F`) because the frozen test's loopback proxy never
+started `serve_forever` and the default probe seam was bound wrong. The known agy
+`invalid_commit_message` bug did **not** recur (the checkpoint subject was accepted).
+Per the takeover rule I did not start a fix job: I checked the job branch against its
+base (`git diff a07187a 7c51ade -- tests/acceptance` is **empty**), read the diff,
+merged it at `49d708e`, and fixed the two root causes plus the lifecycle/config
+details below myself. `agy_usage` before the start: weekly 96.76%, 5h 96.71%; the job
+reported 0.93 weekly / 3.25 five-hour percentage points.
+
+## D52 — Probe seam binding (2026-10-29)
+`Node` defaulted `probe_url` to the three-argument `link.probe_hub` and then called it
+with `(url, timeout)`, so every real election probe raised `TypeError` after the first
+successful connect (L2/L5 red). The default is now a two-argument closure that binds
+`config.token`. The injected `probe_url` seam is unchanged.
+
+## D53 — Discovery UDP port and clipsync surface (2026-10-29)
+- The beacon's `port` is the node's WebSocket port; the UDP destination is the
+  configured `discovery_port`. The first job sent every datagram to the hard-coded
+  default, so a non-default `discovery_port` would silently fail. `Discovery` now
+  takes `discovery_port` and `Node` passes `MeshConfig.discovery_port`; both validate
+  it as 1..65535 (0 is not a usable fixed destination).
+- `clipsync/config.py` maps exactly the four requested keys (`addresses`, `discovery`,
+  `discovery_port`, `state_dir`). The job had also exposed `discovery_interval` and
+  `address_timeout` in TOML; those are removed (the MeshConfig fields remain for tests
+  and future tuning). `state_dir` expands `~`.
+- Discovery is member-only; the relay path returns before discovery starts (it has no
+  peers and discovery never adds devices).
+
+## D54 — Frozen-test corrections after the job (owner approval requested, H20)
+- The new file's `LoopbackProxy` subclassed `socketserver.ThreadingTCPServer` but
+  never started `serve_forever`, so `shutdown()` blocked forever in L6/L11. Fixed by
+  starting a daemon `serve_forever` thread in `__init__` and joining it in
+  `stop_proxy`; this is a test-harness bug, no assertion changed. Amended into the
+  contract commit (`a07187a` -> `7f2a178`).
+- L2's manual-clock assertion was exact (`<= 0.2`) and failed on binary float rounding
+  (0.200000000000045 > 0.2); it now allows a 1e-6 epsilon. Still asserts the dead cost
+  is at most one per-address timeout.
+- G7 (`test_g7_dependency_allowlist`) hard-codes the pure-core file names and rejects
+  every new file, so it cannot pass with the mandated new modules unchanged. Its
+  `pure_core` set now also lists `addressing.py` and `discovery.py`; the new L10 test
+  independently enforces stdlib-only imports and the app-free rule, and no existing
+  assertion was weakened. This is the only frozen-test edit that changes a rule, so it
+  is called out for owner approval in `NEEDS_HUMAN.md` (H20).
+- Final test freeze commit: `40af196`; `git diff 40af196 -- tests/acceptance` is empty.
+  The job itself was gated against `a07187a` before any of my edits.
+
+## D55 — Implementation choices in the takeover (2026-10-29)
+- `PeerConfig.address` may be `""` only when `addresses` is non-empty; old configs
+  still require a non-empty `address`, so no old file changes meaning.
+- `LastGoodStore.get` returns `Address(kind="static", host, port)`; `Address` equality
+  is by `host:port`, so the stored kind is intentionally not persisted. IPv6 hosts are
+  bracketed in the stored string.
+- Discovery entries are keyed by local receive time (not the sender's ts), so a clock
+  skew between devices cannot expire a live entry; the sender ts is only the 30 s
+  replay gate. Expiry is `3 * interval` (15 s by default).
+- Discovery uses a **wall clock** (`time.time`) for the beacon ts and the 30 s gate,
+  not the election's monotonic clock: monotonic values have different origins on
+  different machines and would make every real beacon look stale. `Discovery`'s
+  default and `Node` both use `time.time`; the fake-bus tests inject `ManualClock`
+  explicitly. (Found in the final review, after the first gate; the full 20x/5+5 gate
+  was re-run on the fixed code.)
+- `Node._ping` also calls `_ensure_link` when the successful probe was the desired
+  hub. That is what makes an IP change take effect from the election path without a
+  publish; it blocks the election thread for at most one address timeout.
+- `_ensure_link` keeps a connected link whose URL is still a candidate and refreshes
+  `last_good`; only a vanished address triggers a reconnect. A disconnected link is
+  re-evaluated against the new candidate order.
+- `scripts/lan_check.py` is stdlib plus `meshcore.discovery`, both roles send and
+  listen, default 20 s PASS/FAIL; it was syntax/`--help` checked, not run against a
+  real LAN (needs two machines).
+
+## D56 — Phase 2b gate (2026-10-29)
+Branch `integration/lan`, never merged into `main` by this run.
+- Frozen-test job gate: `git diff a07187a 7c51ade -- tests/acceptance` **empty** (27
+  lines of owner edits vs `7f2a178`, none from agy).
+- `tests/acceptance/test_meshcore_lan.py`: **20/20 runs, 11 passed each** (1.3–3.0 s),
+  no `Logging error`, no `Task was destroyed`.
+- Full suite, clean shell (`env -u PYTHONPATH`): **5/5 runs, 300 passed**, no noise.
+- Full suite with the ROS PYTHONPATH from the request: **5/5 runs, 300 passed**, no
+  noise.
+- Baseline was 289; the new file adds 11 tests. Existing tests pass (with the two
+  documented test-harness/allowlist edits in D54; no production assertion relaxed).
+- Final HEAD on `integration/lan`: `7bf6573` (wall-clock fix); the full 20x/5+5 gate
+  was re-run on it with the same results.
+- Security: beacons are unauthenticated metadata to a same-L2 observer (group id,
+  device id, port) but cannot be forged without the group token; replay window 30 s;
+  multicast TTL 1; discovery is off by default and member-only.

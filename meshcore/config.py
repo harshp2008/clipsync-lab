@@ -7,6 +7,7 @@ import math
 from typing import Any, Iterable
 import urllib.parse
 
+from meshcore.addressing import Address
 from meshcore.messages import Hello
 
 DEFAULT_MAX_FRAME_BYTES: int = 4 * ((8 * 1024 * 1024 + 2) // 3) + 8192
@@ -102,15 +103,32 @@ class PeerConfig:
 
     device_id: str
     name: str
-    address: str
+    address: str = ""
     perm: int | None = None
     temp_rank: int | None = None
     will_hub: bool = True
+    addresses: tuple[Address, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_non_empty_str(self.device_id, "device_id")
         _validate_non_empty_str(self.name, "name")
-        _validate_non_empty_str(self.address, "address")
+        if not isinstance(self.address, str):
+            raise ValueError(f"address must be a str, got {type(self.address).__name__}")
+        addr_clean = self.address.strip()
+        object.__setattr__(self, "address", addr_clean)
+
+        if not isinstance(self.addresses, tuple):
+            object.__setattr__(self, "addresses", tuple(self.addresses))
+
+        for a in self.addresses:
+            if not isinstance(a, Address):
+                raise ValueError(
+                    f"addresses items must be Address instances, got {type(a).__name__}"
+                )
+
+        if not addr_clean and not self.addresses:
+            raise ValueError("PeerConfig requires non-empty address or non-empty addresses")
+
         _validate_non_negative_int(self.perm, "perm")
         _validate_non_negative_int(self.temp_rank, "temp_rank")
         if not isinstance(self.will_hub, bool):
@@ -136,12 +154,17 @@ class MeshConfig:
     bind: str = "127.0.0.1"
     port: int = 8765
     peers: tuple[PeerConfig, ...] = ()
+    discovery: bool = False
+    discovery_port: int = 8766
+    discovery_interval: float = 5.0
+    state_dir: str | None = None
     heartbeat: float = 10.0
     missed_pongs: int = 3
     probe_timeout: float = 2.0
     debounce: float = 30.0
     reconnect_delay: float = 0.2
     connect_timeout: float = 5.0
+    address_timeout: float = 2.0
     max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES
 
     def __post_init__(self) -> None:
@@ -223,6 +246,22 @@ class MeshConfig:
         _validate_non_negative_float(self.debounce, "debounce")
         _validate_positive_float(self.reconnect_delay, "reconnect_delay")
         _validate_positive_float(self.connect_timeout, "connect_timeout")
+        _validate_positive_float(self.address_timeout, "address_timeout")
+
+        if not isinstance(self.discovery, bool):
+            raise ValueError(f"discovery must be a bool, got {self.discovery!r}")
+        if (
+            isinstance(self.discovery_port, bool)
+            or not isinstance(self.discovery_port, int)
+            or not (1 <= self.discovery_port <= 65535)
+        ):
+            raise ValueError(
+                f"discovery_port must be an int between 1 and 65535, got {self.discovery_port!r}"
+            )
+        _validate_positive_float(self.discovery_interval, "discovery_interval")
+        if self.state_dir is not None:
+            if not isinstance(self.state_dir, str) or not self.state_dir.strip():
+                raise ValueError("state_dir must be None or a non-empty string")
 
         if isinstance(self.max_frame_bytes, bool) or not isinstance(self.max_frame_bytes, int) or self.max_frame_bytes <= 0:
             raise ValueError(f"max_frame_bytes must be a positive int, got {self.max_frame_bytes!r}")

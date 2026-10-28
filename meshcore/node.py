@@ -4,14 +4,26 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+from pathlib import Path
 import threading
 import time
 from typing import Any, Callable
 import urllib.parse
 
+from meshcore.addressing import (
+    LastGoodStore,
+    default_state_dir,
+    ordered_addresses,
+    parse_address,
+)
 from meshcore.config import MeshConfig, PeerConfig, format_ws_url
 from meshcore.coordination import order
 from meshcore.crypto import GroupCipher, MeshCryptoError
+from meshcore.discovery import (
+    Discovery,
+    DiscoverySocket,
+    create_udp_socket,
+)
 from meshcore.election import Election
 from meshcore.hub import HubServer
 from meshcore.link import Link, LinkError, probe_hub
@@ -54,15 +66,33 @@ class Node:
         *,
         can_reach: Callable[[str, str], bool] | None = None,
         clock: Callable[[], float] | None = None,
+        probe_url: Callable[[str, float], bool] | None = None,
+        discovery_socket_factory: Callable[[], DiscoverySocket] | None = None,
     ) -> None:
         self._config: MeshConfig = config
         self._can_reach: Callable[[str, str], bool] = (
             can_reach if can_reach is not None else (lambda a, b: True)
         )
         self._clock: Callable[[], float] | None = clock
+        self._probe_url: Callable[[str, float], bool] = (
+            probe_url
+            if probe_url is not None
+            else (lambda url, timeout: probe_hub(url, config.token, timeout))
+        )
+        self._discovery_socket_factory: Callable[[], DiscoverySocket] | None = (
+            discovery_socket_factory
+        )
         self._peer_by_id: dict[str, PeerConfig] = {
             p.device_id: p for p in config.peers
         }
+
+        state_dir = (
+            Path(config.state_dir).expanduser()
+            if config.state_dir is not None
+            else default_state_dir()
+        )
+        self._last_good: LastGoodStore = LastGoodStore(state_dir / "last_good.json")
+        self._discovery: Discovery | None = None
 
         self._cipher: GroupCipher | None = None
         if config.role != "relay" and config.e2e_key is not None:
@@ -146,6 +176,20 @@ class Node:
         with self._link_lock:
             return self._link is not None and self._link.connected
 
+    @property
+    def connection_url(self) -> str | None:
+        """The WebSocket URL of the active client link, or None."""
+        with self._link_lock:
+            if self._link is not None and self._link.connected:
+                return self._link.url
+            return None
+
+    @property
+    def discovery(self) -> Discovery | None:
+        """The Discovery instance, or None if discovery is off or relay."""
+        with self._lifecycle_lock:
+            return self._discovery
+
     def on_receive(self, callback: Callable[[str | None, bytes], None]) -> None:
         """Register a callback for received application payloads."""
         self._receive_callbacks.append(callback)
@@ -167,8 +211,14 @@ class Node:
                     non_loopback = True
                 else:
                     for peer in self._config.peers:
-                        if not _is_loopback(_extract_host(peer.address)):
+                        if peer.address and not _is_loopback(_extract_host(peer.address)):
                             non_loopback = True
+                            break
+                        for addr in peer.addresses:
+                            if not _is_loopback(addr.host):
+                                non_loopback = True
+                                break
+                        if non_loopback:
                             break
                     if not non_loopback and self._config.relay is not None:
                         if not _is_loopback(_extract_host(self._config.relay.address)):
@@ -216,7 +266,40 @@ class Node:
             )
             self._hub.start()
 
-            # 2. Start election driver
+            # 2. Start discovery (if enabled)
+            if self._config.discovery:
+                sock: DiscoverySocket | None = None
+                try:
+                    sock = (
+                        self._discovery_socket_factory()
+                        if self._discovery_socket_factory is not None
+                        else create_udp_socket(self._config.discovery_port)
+                    )
+                    self._discovery = Discovery(
+                        group_id=self._config.group_id,
+                        device_id=self._config.device_id,
+                        token=self._config.token,
+                        port=self._hub.port,
+                        socket=sock,
+                        peers={p.device_id for p in self._config.peers},
+                        # Discovery timestamps cross devices, so they must be wall
+                        # clock; the election clock is monotonic and stays there.
+                        clock=time.time,
+                        interval=self._config.discovery_interval,
+                        discovery_port=self._config.discovery_port,
+                        logger=logging.getLogger("meshcore.discovery"),
+                    )
+                    self._discovery.start()
+                except Exception as exc:
+                    logger.warning("Failed to start discovery: %s", exc)
+                    self._discovery = None
+                    if sock is not None:
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass
+
+            # 3. Start election driver
             preferred_id = self._config.relay.device_id if self._config.relay is not None else None
             self._election = Election(
                 self_hello=self._config.hello(),
@@ -234,7 +317,7 @@ class Node:
             self._election.start()
 
     def stop(self) -> None:
-        """Stop link, election, and hub server, and release listening port. Idempotent."""
+        """Stop link, election, discovery, and hub server, and release listening port. Idempotent."""
         with self._lifecycle_lock:
             if self._stopped or not self._started:
                 self._stopped = True
@@ -244,6 +327,9 @@ class Node:
 
             election = self._election
             self._election = None
+
+            discovery = self._discovery
+            self._discovery = None
 
             with self._link_lock:
                 link = self._link
@@ -256,6 +342,9 @@ class Node:
 
         if election is not None:
             election.stop()
+
+        if discovery is not None:
+            discovery.stop()
 
         if link is not None:
             link.close()
@@ -318,18 +407,39 @@ class Node:
                 url = format_ws_url(self._config.relay.address)
             except ValueError:
                 return False
-            return probe_hub(url, self._config.token, timeout)
+            return self._probe_url(url, timeout)
 
         peer = self._peer_by_id.get(target_id)
         if peer is None:
             return False
 
-        try:
-            url = format_ws_url(peer.address)
-        except ValueError:
+        discovered = (
+            self._discovery.addresses_for(target_id)
+            if self._discovery is not None
+            else ()
+        )
+        last_good = self._last_good.get(target_id)
+        candidates = ordered_addresses(peer, discovered=discovered, last_good=last_good)
+        if not candidates:
             return False
 
-        return probe_hub(url, self._config.token, timeout)
+        clock_fn = self._clock if self._clock is not None else time.monotonic
+        start_time = clock_fn()
+
+        for addr in candidates:
+            elapsed = clock_fn() - start_time
+            remaining = timeout - elapsed
+            if remaining <= 0:
+                break
+            per_addr_timeout = min(self._config.address_timeout, remaining)
+            url = addr.websocket_url
+            if self._probe_url(url, per_addr_timeout):
+                self._last_good.set(target_id, addr)
+                if target_id == self._desired_hub and target_id != self.device_id:
+                    self._ensure_link(target_id)
+                return True
+
+        return False
 
     def _handle_hub_changed(self, new_hub: str) -> None:
         old_hub = self._current_hub
@@ -360,51 +470,78 @@ class Node:
             return
 
         if self._config.relay is not None and hub == self._config.relay.device_id:
-            target_url = format_ws_url(self._config.relay.address)
+            try:
+                candidates = [parse_address(self._config.relay.address)]
+            except ValueError:
+                return
         else:
             peer = self._peer_by_id.get(hub)
             if peer is None:
                 return
-            target_url = format_ws_url(peer.address)
+            discovered = (
+                self._discovery.addresses_for(hub)
+                if self._discovery is not None
+                else ()
+            )
+            last_good = self._last_good.get(hub)
+            candidates = ordered_addresses(peer, discovered=discovered, last_good=last_good)
+
+        if not candidates:
+            return
+
+        candidate_urls = [c.websocket_url for c in candidates]
 
         with self._link_lock:
             if self._link is not None:
-                if self._link.url != target_url:
-                    self._link.close()
-                    self._link = None
-                    self._current_hub = None
-                elif self._link.connected:
+                if self._link.url in candidate_urls and self._link.connected:
+                    matching_addr = next(
+                        c for c in candidates if c.websocket_url == self._link.url
+                    )
+                    self._last_good.set(hub, matching_addr)
                     self._current_hub = hub
                     return
-                else:
-                    # Same address: the Link reconnects on its own.
-                    return
+                self._link.close()
+                self._link = None
+                self._current_hub = None
 
             if not self._can_reach(self.device_id, hub):
                 return
 
-            link = Link(
-                url=target_url,
-                token=self._config.token,
-                hello=self._config.hello(),
-                max_frame_bytes=self._config.max_frame_bytes,
-                reconnect=True,
-                reconnect_delay=self._config.reconnect_delay,
-                connect_timeout=self._config.connect_timeout,
-                thread_name=f"meshcore-link-{self.device_id}",
-                on_roster=self._handle_client_roster,
-                on_payload=self._handle_client_payload,
-            )
-            try:
-                link.connect()
-                self._link = link
-                self._current_hub = hub
-            except LinkError:
-                # Initial connect failed; publish() retries on the next call and a
-                # later election change re-triggers the link.
-                link.close()
-                self._link = None
-                self._current_hub = None
+            clock_fn = self._clock if self._clock is not None else time.monotonic
+            start_time = clock_fn()
+            total_budget = self._config.connect_timeout
+
+            for addr in candidates:
+                elapsed = clock_fn() - start_time
+                remaining = total_budget - elapsed
+                if remaining <= 0:
+                    break
+                per_addr_timeout = min(self._config.address_timeout, remaining)
+                target_url = addr.websocket_url
+
+                link = Link(
+                    url=target_url,
+                    token=self._config.token,
+                    hello=self._config.hello(),
+                    max_frame_bytes=self._config.max_frame_bytes,
+                    reconnect=True,
+                    reconnect_delay=self._config.reconnect_delay,
+                    connect_timeout=per_addr_timeout,
+                    thread_name=f"meshcore-link-{self.device_id}",
+                    on_roster=self._handle_client_roster,
+                    on_payload=self._handle_client_payload,
+                )
+                try:
+                    link.connect()
+                    self._link = link
+                    self._current_hub = hub
+                    self._last_good.set(hub, addr)
+                    return
+                except LinkError:
+                    link.close()
+
+            self._link = None
+            self._current_hub = None
 
     def _handle_client_roster(self, new_roster: list[Hello]) -> None:
         with self._roster_lock:

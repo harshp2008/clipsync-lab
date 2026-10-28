@@ -184,6 +184,97 @@ It cannot read or forge clipboard plaintext without the group key. A device in t
 groups and cross-group sharing are out of scope; a group is the account, with no
 passwords.
 
+## Testing without internet
+
+Phase 2b adds two independent mechanisms:
+
+- **Several addresses per peer** (`addresses`) tried in the fixed order
+  `tailnet`, `lan`, `hotspot`, `static`, with the last working `host:port`
+  remembered in `state_dir` (default `$XDG_STATE_HOME/meshcore`, usually
+  `~/.local/state/meshcore`). A dead address costs at most its short timeout.
+- **Opt-in LAN discovery** (`discovery = true`, default **off**) using a stdlib UDP
+  beacon on `discovery_port` (default 8766). It only fills in a `lan` address for a
+  device id already listed in static `peers`; it never adds devices or changes the
+  hub election. Beacons are HMAC-authenticated with the group token.
+
+A member config for a hotspot (no internet, no Tailscale) can look like this:
+
+```toml
+device_id = "laptop"
+name = "Laptop"
+group_id = "family"
+token = "<long random token>"
+e2e_key_file = "family.key"      # required for any non-loopback address
+bind = "0.0.0.0"
+port = 8766                      # TCP hub port
+discovery = true
+discovery_port = 8766            # UDP; TCP and UDP 8766 do not collide
+# state_dir = "~/.local/state/meshcore"   # default
+
+[[peers]]
+device_id = "phone"
+name = "Phone"
+address = "100.64.0.2:8765"      # optional old tailnet fallback
+addresses = [
+  { kind = "lan", host = "192.168.1.23", port = 8765 },
+]
+```
+
+### Hotspot procedure (two machines, no internet)
+
+1. On the phone: turn **mobile data off**, then enable the **hotspot**.
+2. Connect the laptop to that hotspot. Do not connect the phone to anything else.
+3. On both devices run meshcore/clipsync with the **same group** (`group_id` and
+   `token`; the same `e2e_key` too if any address is non-loopback) and
+   `discovery = true`. Their old `tailnet`/`static` addresses may be dead; discovery
+   supplies the current LAN IP.
+4. Wait about 10 s, then confirm the peers see each other and a clipboard sync
+   arrives. To test a hub failover, stop the hub, wait for the debounce, and sync
+   again.
+
+### Discovery-only check (`scripts/lan_check.py`, stdlib only)
+
+This checks the discovery leg without meshcore/clipsync running. Run one command on
+each machine, with the same group and token:
+
+```bash
+# machine A
+python3 scripts/lan_check.py listen --group family --token '<group token>'
+
+# machine B
+python3 scripts/lan_check.py probe  --group family --token '<group token>'
+```
+
+Both sides send their own authenticated beacons and listen. Each prints every beacon
+heard (source IP, device id, group, port) and the measured time to first sighting;
+after 20 s (`--duration`) each prints `PASS` (heard at least one valid beacon from the
+other device) or `FAIL`, and exits 0/1. Add `--port 8766` if you changed
+`discovery_port`, and `--hub-port 8765` to control the advertised WebSocket port.
+
+**Expected result:** within a second or two each side prints the other's source IP and
+`PASS` after 20 s. A `FAIL` with no beacons means broadcast/multicast is blocked or the
+two devices are on different networks; a `FAIL` with only your own beacons means the
+other side's traffic does not reach you.
+
+**Report a failure with:** both commands and their complete output, the operating
+systems, whether the network is a hotspot/public Wi-Fi/home LAN, whether the hotspot
+has "client isolation" enabled, `ip addr` / `ip route` on both machines, and whether
+`discovery_port` is free (UDP).
+
+**Limits (what this cannot fix):** public Wi-Fi and airports often enable client
+isolation, which blocks broadcast and multicast (and often direct peer traffic);
+a hotspot works only if it does not isolate its clients. Two devices on different
+networks with no internet cannot reach each other — no discovery can bridge that.
+mDNS/Bonjour-style names are also out of scope; this is a small authenticated UDP
+beacon, not a naming service. Discovery is unencrypted metadata: anyone on the same
+L2 sees the group id, device id and WebSocket port, but cannot read or forge a valid
+beacon without the group token, and replay is limited to the 30 s timestamp window.
+Within that window a captured beacon can be replayed from another source IP and move
+an already-known peer's address (a redirect/DoS), though the attacker still cannot
+complete the authenticated WebSocket handshake without the token. Every 5 s each
+member sends a few small broadcast/multicast datagrams; on a large noisy network this
+is a small but non-zero broadcast load.
+
 ## Two-terminal smoke test
 
 With `clipsync-relay` already running in the background, you can verify sync between the daemon and `clipsync-peer` across two terminals.

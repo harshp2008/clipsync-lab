@@ -888,8 +888,10 @@ def test_g7_dependency_allowlist() -> None:
     }
     pure_core = {
         "__init__.py",
+        "addressing.py",
         "config.py",
         "coordination.py",
+        "discovery.py",
         "election.py",
         "messages.py",
         "node.py",
