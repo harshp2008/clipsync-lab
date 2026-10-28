@@ -8,12 +8,12 @@ import hmac
 from http import HTTPStatus
 import json
 import threading
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import websockets
 from websockets.server import WebSocketServer
 
-from meshcore.config import DEFAULT_MAX_FRAME_BYTES
+from meshcore.config import DEFAULT_MAX_FRAME_BYTES, GroupConfig
 from meshcore.coordination import order
 from meshcore.messages import (
     CONTROL_HELLO,
@@ -39,7 +39,7 @@ class HubServer:
     def __init__(
         self,
         *,
-        token: str,
+        token: str | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
         max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
@@ -49,9 +49,9 @@ class HubServer:
         temp_rank: int | None = None,
         will_hub: bool = True,
         on_data: Callable[[str | None, bytes], None] | None = None,
+        group_id: str = "default",
+        groups: Iterable[GroupConfig] | None = None,
     ) -> None:
-        if not isinstance(token, str) or len(token) == 0:
-            raise ValueError("token must be a non-empty string")
         if not isinstance(host, str) or len(host) == 0:
             raise ValueError("host must be a non-empty string")
         if isinstance(port, bool) or not isinstance(port, int) or port < 0 or port > 65535:
@@ -61,7 +61,29 @@ class HubServer:
                 f"max_frame_bytes must be a positive int, got {max_frame_bytes!r}"
             )
 
-        self._token: str = token
+        if groups is None:
+            if not isinstance(token, str) or len(token) == 0:
+                raise ValueError("token must be a non-empty string when groups is None")
+            if not isinstance(group_id, str) or not group_id.strip():
+                raise ValueError("group_id must be a non-empty string")
+            self._groups: tuple[GroupConfig, ...] = (GroupConfig(group_id.strip(), token),)
+        else:
+            groups_tuple = tuple(groups)
+            if not groups_tuple:
+                raise ValueError("groups must not be empty when provided")
+            for g in groups_tuple:
+                if not isinstance(g, GroupConfig):
+                    raise ValueError(f"All groups must be GroupConfig instances, got {type(g).__name__}")
+            g_ids = [g.id for g in groups_tuple]
+            g_tokens = [g.token for g in groups_tuple]
+            if len(set(g_ids)) != len(g_ids):
+                raise ValueError("serve_groups ids must be unique")
+            if len(set(g_tokens)) != len(g_tokens):
+                raise ValueError("serve_groups tokens must be unique")
+            self._groups = groups_tuple
+
+        self._token: str | None = token
+        self._group_id: str = group_id
         self._host: str = host
         self._port: int = port
         self._max_frame_bytes: int = max_frame_bytes
@@ -80,6 +102,7 @@ class HubServer:
         self._stop_event: asyncio.Event | None = None
         self._clients: dict[Any, asyncio.Queue[bytes | str]] = {}
         self._hello_by_ws: dict[Any, Hello] = {}
+        self._group_by_ws: dict[Any, str] = {}
         self._lock = threading.Lock()
         self._clients_lock = threading.Lock()
         self._started_event = threading.Event()
@@ -99,6 +122,11 @@ class HubServer:
     def running(self) -> bool:
         """Whether the server is currently running and listening."""
         return self._running
+
+    @property
+    def groups(self) -> tuple[GroupConfig, ...]:
+        """Tuple of groups served by this HubServer."""
+        return self._groups
 
     def set_on_data(self, callback: Callable[[str | None, bytes], None] | None) -> None:
         """Set or update the callback for receiving client app payloads."""
@@ -176,15 +204,35 @@ class HubServer:
             with self._clients_lock:
                 self._clients.clear()
                 self._hello_by_ws.clear()
+                self._group_by_ws.clear()
 
     def _signal_stop(self) -> None:
         if self._stop_event is not None and not self._stop_event.is_set():
             self._stop_event.set()
 
-    def roster(self) -> list[Hello]:
-        """Return the current roster sorted by coordination.order."""
-        devices: list[Hello] = []
-        if self._device_id is not None:
+    def roster(self, group_id: str | None = None) -> list[Hello]:
+        """Return the current roster for a group sorted by coordination.order."""
+        if group_id is None:
+            if len(self._groups) == 1:
+                return self.roster(self._groups[0].id)
+            devices: list[Hello] = []
+            if self._device_id is not None:
+                devices.append(
+                    Hello(
+                        device_id=self._device_id,
+                        name=self._name if self._name is not None else self._device_id,
+                        perm=self._perm,
+                        temp_rank=self._temp_rank,
+                        will_hub=self._will_hub,
+                        group_id=self._group_id,
+                    )
+                )
+            with self._clients_lock:
+                devices.extend(self._hello_by_ws.values())
+            return order(devices)
+
+        devices = []
+        if self._device_id is not None and self._group_id == group_id:
             devices.append(
                 Hello(
                     device_id=self._device_id,
@@ -192,24 +240,39 @@ class HubServer:
                     perm=self._perm,
                     temp_rank=self._temp_rank,
                     will_hub=self._will_hub,
+                    group_id=self._group_id,
                 )
             )
         with self._clients_lock:
-            devices.extend(self._hello_by_ws.values())
+            for ws, hello in self._hello_by_ws.items():
+                if self._group_by_ws.get(ws) == group_id:
+                    devices.append(hello)
         return order(devices)
 
-    def broadcast(self, payload: bytes | bytearray | memoryview) -> None:
-        """Broadcast hub-origin data to every connected client."""
+    def broadcast(
+        self, payload: bytes | bytearray | memoryview, group_id: str | None = None
+    ) -> None:
+        """Broadcast hub-origin data to every connected client of the target group."""
         frame = bytes(payload)
+        if group_id is None:
+            if len(self._groups) == 1:
+                target_group = self._groups[0].id
+            else:
+                raise ValueError(
+                    "group_id is required for broadcast when multiple groups are served"
+                )
+        else:
+            target_group = group_id
+
         loop = self._loop
         if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(self._async_broadcast, frame)
+            loop.call_soon_threadsafe(self._async_broadcast, frame, target_group)
 
-    def _async_broadcast(self, payload: bytes) -> None:
+    def _async_broadcast(self, payload: bytes, target_group: str) -> None:
         wrapped: bytes | None = None
         with self._clients_lock:
             for ws, queue in list(self._clients.items()):
-                if not getattr(ws, "closed", False):
+                if self._group_by_ws.get(ws) == target_group and not getattr(ws, "closed", False):
                     if ws in self._hello_by_ws:
                         if wrapped is None:
                             wrapped = wrap_data_envelope(self._device_id, payload)
@@ -217,8 +280,8 @@ class HubServer:
                     else:
                         queue.put_nowait(payload)
 
-    def _broadcast_roster(self) -> None:
-        """Broadcast updated roster to all helloed clients."""
+    def _broadcast_roster(self, group_id: str) -> None:
+        """Broadcast updated roster to helloed clients of a given group."""
         loop = self._loop
         if loop is None or not loop.is_running():
             return
@@ -228,15 +291,16 @@ class HubServer:
             current_loop = None
 
         if current_loop is not loop:
-            loop.call_soon_threadsafe(self._broadcast_roster)
+            loop.call_soon_threadsafe(self._broadcast_roster, group_id)
             return
 
-        roster_msg = encode_roster(self.roster())
+        roster_msg = encode_roster(self.roster(group_id))
         with self._clients_lock:
-            for ws in list(self._hello_by_ws.keys()):
-                queue = self._clients.get(ws)
-                if queue is not None and not getattr(ws, "closed", False):
-                    queue.put_nowait(roster_msg)
+            for ws, hello in list(self._hello_by_ws.items()):
+                if self._group_by_ws.get(ws) == group_id:
+                    queue = self._clients.get(ws)
+                    if queue is not None and not getattr(ws, "closed", False):
+                        queue.put_nowait(roster_msg)
 
     def _run_loop(self) -> None:
         loop = asyncio.new_event_loop()
@@ -255,8 +319,15 @@ class HubServer:
             path: str, request_headers: Any
         ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes] | None:
             auth = request_headers.get("Authorization")
-            expected = f"Bearer {self._token}"
-            if not isinstance(auth, str) or not hmac.compare_digest(auth, expected):
+            if not isinstance(auth, str) or not auth.startswith("Bearer "):
+                return (HTTPStatus.FORBIDDEN, [], b"")
+            token_candidate = auth[7:]
+            matched = False
+            for g in self._groups:
+                if hmac.compare_digest(token_candidate, g.token):
+                    matched = True
+                    break
+            if not matched:
                 return (HTTPStatus.FORBIDDEN, [], b"")
             return None
 
@@ -312,9 +383,23 @@ class HubServer:
             pass
 
     async def _handler(self, ws: Any, *args: Any) -> None:
+        auth = getattr(ws, "request_headers", {}).get("Authorization", "")
+        token_candidate = auth[7:] if isinstance(auth, str) and auth.startswith("Bearer ") else ""
+        bound_group_id: str | None = None
+        for g in self._groups:
+            if hmac.compare_digest(token_candidate, g.token):
+                bound_group_id = g.id
+                break
+
+        if bound_group_id is None:
+            await ws.close(1008, "Unauthorized")
+            return
+
         queue: asyncio.Queue[bytes | str] = asyncio.Queue()
         with self._clients_lock:
             self._clients[ws] = queue
+            self._group_by_ws[ws] = bound_group_id
+
         sender_task = asyncio.create_task(self._client_sender(ws, queue))
         try:
             async for message in ws:
@@ -340,11 +425,15 @@ class HubServer:
                         except Exception:
                             pass
 
-                    # Forward to other clients (no echo to sender)
+                    # Forward to other clients in same group (no echo to sender)
                     wrapped: bytes | None = None
                     with self._clients_lock:
                         for other_ws, other_queue in list(self._clients.items()):
-                            if other_ws != ws and not getattr(other_ws, "closed", False):
+                            if (
+                                other_ws != ws
+                                and self._group_by_ws.get(other_ws) == bound_group_id
+                                and not getattr(other_ws, "closed", False)
+                            ):
                                 if other_ws in self._hello_by_ws:
                                     if wrapped is None:
                                         wrapped = wrap_data_envelope(sender_id, payload)
@@ -363,27 +452,33 @@ class HubServer:
                         if msg_type == CONTROL_HELLO:
                             try:
                                 hello = decode_hello(data)
-                                with self._clients_lock:
-                                    self._hello_by_ws[ws] = hello
-                                self._broadcast_roster()
                             except Exception:
-                                pass
+                                continue
+                            if hello.group_id != bound_group_id:
+                                with self._clients_lock:
+                                    self._hello_by_ws.pop(ws, None)
+                                await ws.close(1008, "Group mismatch")
+                                break
+                            with self._clients_lock:
+                                self._hello_by_ws[ws] = hello
+                            self._broadcast_roster(bound_group_id)
                         elif msg_type == CONTROL_LEAVING:
                             with self._clients_lock:
                                 removed = self._hello_by_ws.pop(ws, None)
                             if removed is not None:
-                                self._broadcast_roster()
+                                self._broadcast_roster(bound_group_id)
                         else:
                             # Malformed / unknown control text is ignored
                             pass
                     else:
-                        # Non-control text frame: forward to un-helloed clients only
+                        # Non-control text frame: forward to un-helloed clients only in same group
                         with self._clients_lock:
                             is_helloed = ws in self._hello_by_ws
                             if not is_helloed:
                                 for other_ws, other_queue in list(self._clients.items()):
                                     if (
                                         other_ws != ws
+                                        and self._group_by_ws.get(other_ws) == bound_group_id
                                         and other_ws not in self._hello_by_ws
                                         and not getattr(other_ws, "closed", False)
                                     ):
@@ -396,8 +491,9 @@ class HubServer:
             with self._clients_lock:
                 self._clients.pop(ws, None)
                 had_hello = self._hello_by_ws.pop(ws, None)
+                self._group_by_ws.pop(ws, None)
             sender_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await sender_task
             if had_hello is not None and self._running:
-                self._broadcast_roster()
+                self._broadcast_roster(bound_group_id)
