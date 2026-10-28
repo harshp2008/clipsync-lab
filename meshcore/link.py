@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
-import socket
 import threading
-import urllib.parse
 from typing import Any, Callable
 
 import websockets
@@ -42,27 +40,30 @@ def relay_url(port: int, host: str = "127.0.0.1") -> str:
 
 
 def probe_hub(url: str, token: str, timeout: float) -> bool:
-    """Return True when the hub's port accepts a connection within ``timeout``.
+    """Return True when the hub answers an authenticated handshake within ``timeout``.
 
-    The probe is deliberately a bare TCP connect: a WebSocket (or even HTTP)
-    request makes the hub's event loop do work on every election round, which
-    shifts the existing election/link timings. The failed-handshake log it
-    causes is suppressed at the source by ``meshcore.hub`` (the
-    ``websockets.server`` logger is raised to WARNING). Kept here so the probe
-    has one named seam and its timeout is easy to test.
+    The probe performs a real WebSocket connect and immediately closes it, so
+    the hub never sees an invalid upgrade and does not log a failed handshake
+    for every election round. The whole operation is bounded by ``timeout``, so
+    the election's probe-timeout semantics are unchanged. Kept here so the
+    probe has one named seam and its timeout is easy to test.
     """
-    parsed = urllib.parse.urlsplit(url)
-    host = parsed.hostname or "127.0.0.1"
-    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
+    async def _connect_and_close() -> None:
+        ws = await websockets.connect(
+            url,
+            extra_headers={"Authorization": f"Bearer {token}"},
+            max_size=DEFAULT_MAX_FRAME_BYTES,
+            ping_interval=None,
+            open_timeout=timeout,
+            close_timeout=timeout,
+        )
+        await ws.close()
+
     try:
-        sock.connect((host, port))
+        asyncio.run(asyncio.wait_for(_connect_and_close(), timeout))
         return True
     except Exception:
         return False
-    finally:
-        sock.close()
 
 
 def _coerce_frame(frame: Any) -> bytes:

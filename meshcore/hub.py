@@ -7,7 +7,6 @@ import contextlib
 import hmac
 from http import HTTPStatus
 import json
-import logging
 import threading
 from typing import Any, Callable
 
@@ -26,12 +25,6 @@ from meshcore.messages import (
 )
 
 RELAY_MAX_FRAME_BYTES: int = DEFAULT_MAX_FRAME_BYTES
-
-# Every election liveness probe opens and closes a short-lived TCP connection;
-# its aborted HTTP/WebSocket handshake makes websockets log INFO chatter
-# ("connection failed (400 Bad Request)", "connection closed") that floods
-# daemon logs and pytest's capture stream. Keep WARNING and above only.
-logging.getLogger("websockets.server").setLevel(logging.WARNING)
 
 __all__ = [
     "DEFAULT_MAX_FRAME_BYTES",

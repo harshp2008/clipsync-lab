@@ -93,8 +93,9 @@ def test_probe_against_live_hub_emits_no_warning_or_error() -> None:
             logger.setLevel(level)
         server.stop()
 
-    # The hub suppresses websockets' per-connection INFO chatter at the source.
-    assert logging.getLogger("websockets.server").level == logging.WARNING
+    # meshcore must not change another library's logger level (the probe is a
+    # real handshake, so websockets' own INFO chatter stays at its default).
+    assert logging.getLogger("websockets.server").level == logging.NOTSET
 
     noisy = [
         record
