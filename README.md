@@ -262,6 +262,46 @@ A second member needs its own config with a distinct `device_id` and `port`, the
 group token/key, and each other listed under `[[peers]]`. The phone placeholder is
 not a working client yet.
 
+## Quickstart (legacy single relay)
+
+The older single-relay workflow is still supported (and still needed by
+`clipsync-peer`); the current laptop/mesh path is **"Run it for real (laptop)"**
+above. It uses the real clipboard.
+
+```bash
+# long random token, kept out of git
+python3 -c "import secrets; print(secrets.token_urlsafe(32))" > ~/.config/clipsync/token.txt
+chmod 600 ~/.config/clipsync/token.txt
+
+# loopback-only legacy relay
+clipsync-relay --token-file ~/.config/clipsync/token.txt --port 8765
+
+# one poll, JSON statistics (legacy relay_url config)
+clipsync --config ~/.config/clipsync/config.toml --once
+```
+
+Without installing the console scripts, use `python3 -m clipsync.relay_cli` and
+`python3 -m clipsync.daemon`.
+
+## Two-terminal smoke test (legacy, real clipboard)
+
+This older manual test uses the real clipboard and the legacy `clipsync-relay` /
+`clipsync-peer` pair. Prefer the headless `scripts/smoke_two_processes.py` unless you
+specifically need to exercise the peer tool.
+
+> **Warning:** this uses the real clipboard. Use non-sensitive content in a scratch
+> session, and do not run it while secrets may be copied.
+
+1. Start the relay: `clipsync-relay --token-file ~/.config/clipsync/token.txt --port 8765`.
+2. Run the daemon: `clipsync --config ~/.config/clipsync/config.toml`.
+3. Listen with the peer (save received images):
+   `clipsync-peer --config ~/.config/clipsync/config.toml --device-id phone-test listen --output-dir ./received`
+4. Send text: `clipsync-peer --config ... --device-id phone-test send-text "hello from the peer"`.
+5. Send an image: `clipsync-peer --config ... --device-id phone-test send-image ./screenshot.png`.
+
+`--device-id` must differ from the daemon's id so payloads are not dropped as
+self-echoes.
+
 ## Run the tests
 
 No phone, network or real clipboard needed. Uses the system Python (no installs):
