@@ -397,18 +397,39 @@ class Node:
                 url = format_ws_url(self._config.relay.address)
             except ValueError:
                 return False
-            return probe_hub(url, self._config.token, timeout)
+            return self._probe_url(url, timeout)
 
         peer = self._peer_by_id.get(target_id)
         if peer is None:
             return False
 
-        try:
-            url = format_ws_url(peer.address)
-        except ValueError:
+        discovered = (
+            self._discovery.addresses_for(target_id)
+            if self._discovery is not None
+            else ()
+        )
+        last_good = self._last_good.get(target_id)
+        candidates = ordered_addresses(peer, discovered=discovered, last_good=last_good)
+        if not candidates:
             return False
 
-        return probe_hub(url, self._config.token, timeout)
+        clock_fn = self._clock if self._clock is not None else time.monotonic
+        start_time = clock_fn()
+
+        for addr in candidates:
+            elapsed = clock_fn() - start_time
+            remaining = timeout - elapsed
+            if remaining <= 0:
+                break
+            per_addr_timeout = min(self._config.address_timeout, remaining)
+            url = addr.websocket_url
+            if self._probe_url(url, per_addr_timeout):
+                self._last_good.set(target_id, addr)
+                if target_id == self._desired_hub and target_id != self.device_id:
+                    self._ensure_link(target_id)
+                return True
+
+        return False
 
     def _handle_hub_changed(self, new_hub: str) -> None:
         old_hub = self._current_hub
@@ -439,51 +460,78 @@ class Node:
             return
 
         if self._config.relay is not None and hub == self._config.relay.device_id:
-            target_url = format_ws_url(self._config.relay.address)
+            try:
+                candidates = [parse_address(self._config.relay.address)]
+            except ValueError:
+                return
         else:
             peer = self._peer_by_id.get(hub)
             if peer is None:
                 return
-            target_url = format_ws_url(peer.address)
+            discovered = (
+                self._discovery.addresses_for(hub)
+                if self._discovery is not None
+                else ()
+            )
+            last_good = self._last_good.get(hub)
+            candidates = ordered_addresses(peer, discovered=discovered, last_good=last_good)
+
+        if not candidates:
+            return
+
+        candidate_urls = [c.websocket_url for c in candidates]
 
         with self._link_lock:
             if self._link is not None:
-                if self._link.url != target_url:
-                    self._link.close()
-                    self._link = None
-                    self._current_hub = None
-                elif self._link.connected:
+                if self._link.url in candidate_urls and self._link.connected:
+                    matching_addr = next(
+                        c for c in candidates if c.websocket_url == self._link.url
+                    )
+                    self._last_good.set(hub, matching_addr)
                     self._current_hub = hub
                     return
-                else:
-                    # Same address: the Link reconnects on its own.
-                    return
+                self._link.close()
+                self._link = None
+                self._current_hub = None
 
             if not self._can_reach(self.device_id, hub):
                 return
 
-            link = Link(
-                url=target_url,
-                token=self._config.token,
-                hello=self._config.hello(),
-                max_frame_bytes=self._config.max_frame_bytes,
-                reconnect=True,
-                reconnect_delay=self._config.reconnect_delay,
-                connect_timeout=self._config.connect_timeout,
-                thread_name=f"meshcore-link-{self.device_id}",
-                on_roster=self._handle_client_roster,
-                on_payload=self._handle_client_payload,
-            )
-            try:
-                link.connect()
-                self._link = link
-                self._current_hub = hub
-            except LinkError:
-                # Initial connect failed; publish() retries on the next call and a
-                # later election change re-triggers the link.
-                link.close()
-                self._link = None
-                self._current_hub = None
+            clock_fn = self._clock if self._clock is not None else time.monotonic
+            start_time = clock_fn()
+            total_budget = self._config.connect_timeout
+
+            for addr in candidates:
+                elapsed = clock_fn() - start_time
+                remaining = total_budget - elapsed
+                if remaining <= 0:
+                    break
+                per_addr_timeout = min(self._config.address_timeout, remaining)
+                target_url = addr.websocket_url
+
+                link = Link(
+                    url=target_url,
+                    token=self._config.token,
+                    hello=self._config.hello(),
+                    max_frame_bytes=self._config.max_frame_bytes,
+                    reconnect=True,
+                    reconnect_delay=self._config.reconnect_delay,
+                    connect_timeout=per_addr_timeout,
+                    thread_name=f"meshcore-link-{self.device_id}",
+                    on_roster=self._handle_client_roster,
+                    on_payload=self._handle_client_payload,
+                )
+                try:
+                    link.connect()
+                    self._link = link
+                    self._current_hub = hub
+                    self._last_good.set(hub, addr)
+                    return
+                except LinkError:
+                    link.close()
+
+            self._link = None
+            self._current_hub = None
 
     def _handle_client_roster(self, new_roster: list[Hello]) -> None:
         with self._roster_lock:
