@@ -199,7 +199,8 @@ class Election:
                  debounce: float = 30.0,
                  on_hub_changed: Callable[[str], None] | None = None,
                  logger: logging.Logger | None = None) -> None
-    # .current_hub -> str | None, .set_devices(hellos), .stop(), .run_once()
+    # .current_hub -> str | None, .last_forced -> bool,
+    # .set_devices(hellos), .stop(), .run_once()
 ```
 
 - `run_once()` performs one election cycle: if the current hub is not self and its
@@ -239,15 +240,25 @@ class Node:
 - `start()` is idempotent: starts the hub listener on `bind:port` (every node
   listens; being the hub is an election result, not a separate process), starts the
   election, then follows hub changes.
-- On a hub change: log INFO with old hub, new hub and reason; log WARNING for a
+- On a hub change: log INFO with old hub, new hub and reason
+  (`forced: no reachable device will_hub` or `election probe`); log WARNING for a
   forced hub; when the new hub is self, close any client link and serve as hub; when
   it is remote, open a `Link` to that peer's address with the local Hello, reconnect
   with backoff, and replace the old link. A link to a peer is not even attempted
   when `can_reach` is false.
+- `hub_id` is the hub the node is **attached to**: it becomes the new id immediately
+  when self is elected, and for a remote hub only after its client link is connected.
+  `is_hub` instead reports the election result. This split means a caller that waits
+  for `hub_id` cannot publish into a half-migrated cluster; the frozen tests rely on
+  it (A5 handback and A7 partition heal).
 - `publish(payload)` sends immediately: the hub broadcasts to its clients; a client
   sends over its live link. If there is no route (starting up, failover window) it
   raises `NodeError`; callers keep their own outbox and retry (this preserves the
-  engine's existing outbox behaviour).
+  engine's existing outbox behaviour). A client whose elected hub is remote retries
+  `_ensure_link` on every publish, so a transient initial connect failure heals.
+- `stop()` does not hold the lifecycle lock while joining the election/link/hub
+  threads: those threads read `hub_id`/`is_hub`, and a cross-thread join under that
+  lock would deadlock.
 - `on_receive` fires for app payloads from other devices on both roles (hub clients
   and forwarded client payloads), with the sender's device id when known, else
   `None`. A node never receives its own publish from its own hub.
@@ -256,7 +267,8 @@ class Node:
 - `stop()` sends a best-effort `leaving`, stops the link, election and hub, joins
   threads, and is idempotent. No threads outlive `stop()`.
 - Hub changes and roster updates never deadlock: callbacks run outside internal
-  locks.
+  locks, and the stop path never joins a thread while holding a lock that thread
+  needs.
 
 ## `clipsync/config.py` mapping
 
@@ -307,9 +319,9 @@ class NodeTransport:  # satisfies clipsync.transport.Transport
   validation** (`host != "127.0.0.1"` -> `ValueError("host must be '127.0.0.1'")`),
   and no forwarding logic of its own.
 - `clipsync/relay_transport.py`: `relay_url`/`RELAY_MAX_FRAME_BYTES` re-exported and
-  `RelayTransport` a thin adapter over `Link` (`hello=None`, thread name
-  `clipsync-relay-transport`), translating `LinkError` to `TransportError`. No
-  WebSocket connection loop remains in the file.
+  `RelayTransport` a thin **subclass** of `Link` (`hello=None`, thread name
+  `clipsync-relay-transport`), translating `LinkError` to `TransportError` in
+  `connect`/`send`/`recv`. No WebSocket connection loop remains in the file.
 
 ## Config / mode decisions
 

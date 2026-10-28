@@ -343,3 +343,70 @@ messages (old clients stay payload-only), which keeps their frame stream byte-cl
 A reserved data envelope is used only hub→helloed-client; client→hub data remains raw
 opaque bytes. `can_reach(a, b)` blocks both probes and link connects for the partition
 test. The `roster`/`leaving` codecs use compact JSON text frames.
+
+## D38 — Phase 2a takeover after a verify timeout (2026-10-28 14:44 IST)
+The single implementation job (`4e1b3b79…`) produced 7 commits, plan 9/9 and a clean
+audit, but the wrapper verify timed out. The cause was a real self-deadlock:
+`Election.start()` held its non-reentrant `threading.Lock` and then called
+`run_once()`, which acquires the same lock. I reproduced it, resumed the job once
+with precise instructions (RLock, merge roster with configured peers, retarget the
+link when the hub changes, stop outside the lifecycle lock). The job applied all four
+(commits `a02a17e`, `fa2cdd5`, `11dcc25`, `f5b5339`), but the wrapper verify still
+reported rc 124 and repeated full-suite runs exposed a remaining race: `hub_id`
+followed the election result before the new client link was attached, so A5/A7 could
+observe convergence while a node was not yet reachable. I took over at the gate,
+merged the job branch into `integration/hub-election`, and added the attached-hub
+split (`_desired_hub` vs `_current_hub`), the forced-reason log, and the final gate
+runs. The frozen `tests/acceptance` were never edited (`git diff 906c2e0 --
+tests/acceptance` empty). Cost to this point: **1.93 weekly / 6.76 5h points**; job
+worktree and branch removed without force.
+Reason for takeover rather than a second fix job: the cumulative 45-minute job budget
+was already spent, the failure was a small, well-understood race, and I had already
+reproduced and fixed it locally; the user's rule allows taking over and logging it.
+
+## D39 — `hub_id` means "attached", `is_hub` means "elected" (14:50 IST)
+The frozen tests use `node.hub_id` as the convergence signal, then publish. If
+`hub_id` follows the election tracker, it moves before the new `Link` is connected
+(the election callback runs the connect afterwards), so a peer can wait for
+`hub_id == "n0"` and then publish into a node that is still reconnecting (observed as
+intermittent A5/A7 failures in the full suite). `Node` now keeps `_desired_hub` (the
+election result, drives `is_hub`, publish routing and `_ensure_link`) and
+`_current_hub` (the attached hub, returned by `hub_id`; set immediately for self,
+only after a successful client connect for a remote hub). A failed connect leaves
+`hub_id` unset and `publish()` retries `_ensure_link`; the next election change also
+retries. This is a semantic clarification of the contract, not a test change.
+
+## D40 — Forced-hub logging and the reason on every hub change (14:52 IST)
+Election logs one WARNING `All reachable devices decline will_hub; forced hub: <id>`
+when `probe_hub` returns `forced=True` (timestamped once per forced candidate, not
+per heartbeat). `Election.last_forced` is exposed so `Node` logs every hub change at
+INFO with old hub, new hub and a reason string (`forced: no reachable device
+will_hub` or `election probe`). The task asked for the reason at INFO and a WARNING
+for the forced case; both are now explicit.
+
+## D41 — Config/API decisions for phase 2a (14:52 IST)
+- Mesh mode is selected by a non-empty `peers` list. `relay_url` is required only in
+  legacy mode; old config files load with the new fields defaulted and the daemon
+  keeps the old single-relay path (A9). This is the smallest change that satisfies
+  both "use Node" and "old configs behave exactly as before".
+- `port` was added next to the requested `bind`: static peers must dial a known
+  address, and a node cannot discover its own ephemeral port from config. Default
+  `8765`, validated 0..65535.
+- `DaemonConfig.to_mesh_config()` maps name (defaulting to `device_id`), token, rank
+  fields and peers; mesh timings keep the task defaults (10 s heartbeat, 3 missed
+  pongs, 2 s probe, 30 s debounce).
+- The hub listener runs on every node from `start()`, because `probe_hub` must be
+  able to reach a candidate before that candidate has won an election; being the
+  active hub is the election result. This is logged here because the wording "the
+  next one starts the relay" could also be read as lazily starting the listener.
+
+## D42 — Security: off-loopback `bind` is token-only, no TLS yet (14:52 IST)
+`bind` is honoured by the elected `HubServer`; the compatibility `RelayServer`
+remains loopback-only by its existing contract. Binding a tailnet/LAN address makes
+the relay reachable to anyone who can route to it: the only authentication is the
+shared bearer token, sent in the WebSocket handshake over cleartext `ws://` (no TLS
+in phase 2a). On a shared LAN an attacker can observe/replay the token and join the
+mesh; the hub forwards opaque bytes, so the optional clipsync Fernet key still
+protects payloads end to end, but without it the hub can read clipboard frames. Treat
+off-loopback binding as trusted-network only until a TLS/reverse-proxy phase. This is
+recorded in NEEDS_HUMAN H15 and the REPORT security note.

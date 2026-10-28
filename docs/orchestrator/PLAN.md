@@ -463,3 +463,25 @@ python3 -m pytest -q tests/acceptance/test_meshcore_exploratory.py -m explorator
 - 13:45 — run start; branch `integration/hub-election` cut from `main` (`5a0069e`).
   Baseline **253 passed**. `agy_usage`: weekly **99.64%**, 5h **98.73%**.
 - 13:50 — contract + tests written; frozen from the next commit on.
+- 13:53 — **job `4e1b3b79-ede2-486d-b2a9-4fb68639caed` started** (implementation,
+  verify `python3 -m pytest -q`, max 45 min). `agy_usage` immediately before the
+  start: weekly **99.64%** / 5h **98.73%**.
+- 14:26 — first result `needs_review`: 7 commits, plan 9/9, audit passed, but the
+  wrapper verify timed out (rc 124) after 181 tests. I reproduced it: `Election.start`
+  held its non-reentrant lock and called `run_once`, which acquires the same lock.
+- 14:26–14:31 — I resumed the job once with four precise fixes (RLock, roster merge,
+  link retarget, stop outside the lifecycle lock). It committed them (4 more commits)
+  but the wrapper verify still reported rc 124 and the full suite stayed flaky under
+  repeated runs (`A5`/`A7` occasionally failed because `hub_id` moved before the new
+  client link was connected).
+- 14:44 — **takeover** (logged D38): merged the job branch into
+  `integration/hub-election` (`abee603`), added the attached-hub split in
+  `meshcore/node.py` and the forced-reason log, committed `db70be4`. Frozen
+  `tests/acceptance` diff against `906c2e0` is empty.
+- 14:55 — **gate passed**: acceptance files **13 passed** (10 consecutive runs),
+  full suite **273 passed** (5 consecutive runs), exploratory **passed**
+  (`queued_during_failover=1`, delivered). `agy_cleanup` removed the worktree and job
+  branch (no force). Quota after cleanup: weekly **97.71%**, 5h **91.97%**
+  (spend **1.93 / 6.76** points).
+- 15:00 — docs updated; **`main` untouched**. Merging `integration/hub-election` into
+  `main` is left to the owner (NEEDS_HUMAN H14).
