@@ -32,8 +32,11 @@ contract is `docs/design/meshcore-lan.md`.
   merged at `49d708e`; took over. Fixed the probe-seam token binding (L2/L5), the
   proxy harness `serve_forever` bug (L6/L11), discovery UDP port, clipsync scope and
   the G7 allowlist (D51–D54).
-- 02:10 — LAN acceptance 20/20 (11 passed); full suite 5/5 clean and 5/5 with the ROS
-  PYTHONPATH (300 passed each), no logging noise. Docs and report finished.
+- 02:20 — final review found the beacon `ts` used the election's monotonic clock
+  (different origin per machine), so real beacons would look stale; Discovery now uses
+  `time.time`. Re-ran the whole gate on the fixed code: LAN acceptance 20/20 (11
+  passed); full suite 5/5 clean and 5/5 with the ROS PYTHONPATH (300 passed each), no
+  logging noise. Final HEAD `7bf6573`; docs and report finished.
 
 ## Prior runs
 

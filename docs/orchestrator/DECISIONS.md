@@ -658,6 +658,12 @@ successful connect (L2/L5 red). The default is now a two-argument closure that b
 - Discovery entries are keyed by local receive time (not the sender's ts), so a clock
   skew between devices cannot expire a live entry; the sender ts is only the 30 s
   replay gate. Expiry is `3 * interval` (15 s by default).
+- Discovery uses a **wall clock** (`time.time`) for the beacon ts and the 30 s gate,
+  not the election's monotonic clock: monotonic values have different origins on
+  different machines and would make every real beacon look stale. `Discovery`'s
+  default and `Node` both use `time.time`; the fake-bus tests inject `ManualClock`
+  explicitly. (Found in the final review, after the first gate; the full 20x/5+5 gate
+  was re-run on the fixed code.)
 - `Node._ping` also calls `_ensure_link` when the successful probe was the desired
   hub. That is what makes an IP change take effect from the election path without a
   publish; it blocks the election thread for at most one address timeout.
@@ -679,6 +685,8 @@ Branch `integration/lan`, never merged into `main` by this run.
   noise.
 - Baseline was 289; the new file adds 11 tests. Existing tests pass (with the two
   documented test-harness/allowlist edits in D54; no production assertion relaxed).
+- Final HEAD on `integration/lan`: `7bf6573` (wall-clock fix); the full 20x/5+5 gate
+  was re-run on it with the same results.
 - Security: beacons are unauthenticated metadata to a same-L2 observer (group id,
   device id, port) but cannot be forged without the group token; replay window 30 s;
   multicast TTL 1; discovery is off by default and member-only.

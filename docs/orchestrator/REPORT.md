@@ -916,8 +916,10 @@ merge is H19. Phase 2b of `docs/design/coordination-v2.md` §5; the frozen contr
 - Job gate: `git diff a07187a 7c51ade -- tests/acceptance` is **empty** (0 lines).
   Merged at `49d708e`. The known agy `invalid_commit_message` bug did **not** recur.
 - Post-merge owner fixes: probe token binding, discovery UDP port, clipsync surface,
-  socket cleanup, `~` expansion, plus the documented test mechanics in D54 / H20.
-- `git diff 40af196 -- tests/acceptance` is empty (final freeze).
+  socket cleanup, `~` expansion, wall-clock beacon timestamps (monotonic clocks have
+  different origins per machine and would make every real beacon look stale), plus the
+  documented test mechanics in D54 / H20.
+- Final HEAD `7bf6573`; `git diff 40af196 -- tests/acceptance` is empty (final freeze).
 
 ## Test evidence (2026-10-29)
 
@@ -928,6 +930,10 @@ merge is H19. Phase 2b of `docs/design/coordination-v2.md` §5; the frozen contr
 | Full suite × 5, `env -u PYTHONPATH` | **5/5, 300 passed** (34.6–36.5 s) |
 | Full suite × 5, ROS PYTHONPATH from the request | **5/5, 300 passed** (35.2–35.9 s) |
 | `Logging error` / `Task was destroyed` | **0** in all 30 gate runs (stdout+stderr scanned) |
+
+All three gate blocks were re-run from scratch after the wall-clock fix on `7bf6573`
+(20 LAN runs, 5 clean full-suite runs, 5 ROS full-suite runs); the counts above are
+from that final run.
 
 L11 is marked `exploratory` (real timing / loopback proxy) and passed in every run;
 no exploratory failure was papered over.
