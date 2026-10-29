@@ -442,11 +442,11 @@ def main(
         make_transport = transport_factory
     elif mesh_mode:
         from meshcore.node import Node
-        from .mesh_transport import NodeTransport
+        from .state_transport import MeshStateTransport
 
         def _make_mesh_transport(cfg: DaemonConfig) -> Transport:
             node = Node(cfg.to_mesh_config())
-            return NodeTransport(node)
+            return MeshStateTransport(node)
 
         make_transport = _make_mesh_transport
     else:
