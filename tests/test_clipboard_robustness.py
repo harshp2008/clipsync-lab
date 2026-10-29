@@ -12,6 +12,7 @@ import logging
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 
 import pytest
 
@@ -40,10 +41,38 @@ def make_daemon(runner: FakeXclipRunner, *, poll_interval: float = 0.1, clock=No
     return daemon, t1, t2
 
 
-def clipboard_warnings(caplog) -> list[logging.LogRecord]:
+class _ListHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@contextmanager
+def capture_daemon_logs():
+    """Capture ``clipsync.daemon`` records with a handler on that logger.
+
+    Not pytest's ``caplog``: under the ROS PYTHONPATH a third-party logger class
+    forces ``propagate=False`` on loggers, so root-handler capture sees nothing.
+    """
+    logger = logging.getLogger("clipsync.daemon")
+    handler = _ListHandler()
+    old_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    try:
+        yield handler.records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
+
+def clipboard_warnings(records) -> list[logging.LogRecord]:
     return [
         record
-        for record in caplog.records
+        for record in records
         if record.levelno == logging.WARNING
         and record.name == "clipsync.daemon"
         and "Clipboard backend error" in record.getMessage()
@@ -87,7 +116,7 @@ def test_engine_read_missing_binary_is_counted_not_raised() -> None:
 
 
 # -- daemon loop: read failures ---------------------------------------------
-def test_daemon_survives_read_timeout_logs_once_backs_off_and_recovers(caplog) -> None:
+def test_daemon_survives_read_timeout_logs_once_backs_off_and_recovers() -> None:
     runner = FakeXclipRunner()
     runner.read_error = subprocess.TimeoutExpired("xclip", 2.0)
     runner.fail_reads = 4
@@ -95,11 +124,11 @@ def test_daemon_survives_read_timeout_logs_once_backs_off_and_recovers(caplog) -
     daemon, _t1, t2 = make_daemon(runner, poll_interval=0.1)
 
     sleeps: list[float] = []
-    with caplog.at_level(logging.WARNING, logger="clipsync.daemon"):
+    with capture_daemon_logs() as records:
         polls = daemon.run(max_iterations=6, sleep=sleeps.append)
 
     assert polls == 6
-    warnings = clipboard_warnings(caplog)
+    warnings = clipboard_warnings(records)
     assert len(warnings) == 1
     assert "timed out" in warnings[0].getMessage()
     # 0.1 then doubling to 0.8, then back to poll_interval on the first success.
@@ -112,14 +141,14 @@ def test_daemon_survives_read_timeout_logs_once_backs_off_and_recovers(caplog) -
     assert decode_frame(frames[0]).payload == text_payload("recovered")
 
 
-def test_clipboard_backoff_is_capped_at_five_seconds(caplog) -> None:
+def test_clipboard_backoff_is_capped_at_five_seconds() -> None:
     runner = FakeXclipRunner()
     runner.read_error = subprocess.TimeoutExpired("xclip", 2.0)
     runner.fail_reads = 8
     daemon, _t1, _t2 = make_daemon(runner, poll_interval=0.1)
 
     sleeps: list[float] = []
-    with caplog.at_level(logging.WARNING, logger="clipsync.daemon"):
+    with capture_daemon_logs():
         daemon.run(max_iterations=8, sleep=sleeps.append)
 
     assert [round(delay, 3) for delay in sleeps] == pytest.approx(
@@ -128,7 +157,7 @@ def test_clipboard_backoff_is_capped_at_five_seconds(caplog) -> None:
     assert max(sleeps) <= 5.0
 
 
-def test_same_clipboard_error_is_logged_once_per_minute(caplog) -> None:
+def test_same_clipboard_error_is_logged_once_per_minute() -> None:
     now = [100.0]
     runner = FakeXclipRunner()
     runner.read_error = subprocess.TimeoutExpired("xclip", 2.0)
@@ -136,21 +165,21 @@ def test_same_clipboard_error_is_logged_once_per_minute(caplog) -> None:
     daemon, _t1, _t2 = make_daemon(runner, poll_interval=0.1, clock=lambda: now[0])
 
     sleeps: list[float] = []
-    with caplog.at_level(logging.WARNING, logger="clipsync.daemon"):
+    with capture_daemon_logs() as records:
         daemon.run(max_iterations=3, sleep=sleeps.append)
-        assert len(clipboard_warnings(caplog)) == 1
+        assert len(clipboard_warnings(records)) == 1
 
         now[0] += 30.0
         daemon.run(max_iterations=1, sleep=sleeps.append)
-        assert len(clipboard_warnings(caplog)) == 1  # still inside the 60 s window
+        assert len(clipboard_warnings(records)) == 1  # still inside the 60 s window
 
         now[0] += 31.0
         daemon.run(max_iterations=1, sleep=sleeps.append)
-        assert len(clipboard_warnings(caplog)) == 2  # a new distinct time window
+        assert len(clipboard_warnings(records)) == 2  # a new distinct time window
 
 
 # -- daemon loop: write failures --------------------------------------------
-def test_daemon_survives_write_timeout_and_applies_a_later_frame(caplog) -> None:
+def test_daemon_survives_write_timeout_and_applies_a_later_frame() -> None:
     runner = FakeXclipRunner()
     runner.write_error = subprocess.TimeoutExpired("xclip", 3.0)
     runner.fail_writes = 1
@@ -160,11 +189,11 @@ def test_daemon_survives_write_timeout_and_applies_a_later_frame(caplog) -> None
     t2.send(encode_frame(ClipMessage(origin="phone", seq=2, payload=text_payload("second"))))
 
     sleeps: list[float] = []
-    with caplog.at_level(logging.WARNING, logger="clipsync.daemon"):
+    with capture_daemon_logs() as records:
         polls = daemon.run(max_iterations=3, sleep=sleeps.append)
 
     assert polls == 3
-    warnings = clipboard_warnings(caplog)
+    warnings = clipboard_warnings(records)
     assert len(warnings) == 1
     assert "write" in warnings[0].getMessage()
     # The second frame was applied once the backend recovered.
