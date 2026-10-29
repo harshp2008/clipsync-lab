@@ -563,13 +563,14 @@ def load_config(path: str | Path) -> DaemonConfig:
             raise ConfigError("'state_dir' must be a non-empty string")
         state_dir = val.strip()
 
-    # clipboard backend (default stays the real Wayland backend)
+    # clipboard backend (default stays the real Wayland/wl-clipboard backend)
     clipboard_backend = "wayland"
     if "clipboard_backend" in data and data["clipboard_backend"] is not None:
         val = data["clipboard_backend"]
-        if not isinstance(val, str) or val.strip() not in ("wayland", "file"):
+        if not isinstance(val, str) or val.strip() not in ("wayland", "xclip", "file"):
             raise ConfigError(
-                f"'clipboard_backend' must be 'wayland' or 'file', got {val!r}"
+                "'clipboard_backend' must be 'wayland', 'xclip' or 'file', "
+                f"got {val!r}"
             )
         clipboard_backend = val.strip()
 
