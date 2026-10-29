@@ -23,6 +23,12 @@ poll_interval = 0.2
 # The default clipboard backend is Wayland.  Never set clipboard_backend="file"
 # here: that headless backend is only for tests and would replace your real
 # clipboard with a text file.
+#
+# GNOME Wayland caveat: Mutter has no wl-clipboard data-control protocol, so every
+# wl-paste poll opens a transient window (taskbar flicker) and can hang for seconds.
+# If you see that, opt into the XWayland backend instead -- it needs the xclip
+# package and a set DISPLAY (the daemon exits 2 with a clear error otherwise):
+# clipboard_backend = "xclip"
 
 # Preferred hub: the relay from examples/relay.toml.  If it is unreachable, the
 # members elect a hub among themselves and hand back when it returns.
