@@ -7,11 +7,102 @@ import json
 import struct
 from typing import Any, Iterable, Mapping
 
+from meshcore.coordination import StateVersion, validate_state_key
+
 CONTROL_HELLO = "hello"
 CONTROL_ROSTER = "roster"
 CONTROL_LEAVING = "leaving"
+CONTROL_STATE_SYNC = "state_sync"
 
 ENVELOPE_MAGIC = b"\x00mc2d\x00"
+STATE_MAGIC = b"\x00mc2s\x00"
+MAX_STATE_HEADER_BYTES = 4096
+
+
+def encode_state_sync() -> str:
+    """Encode a state_sync capability announcement control frame."""
+    return json.dumps({"type": CONTROL_STATE_SYNC}, sort_keys=True, separators=(",", ":"))
+
+
+def encode_state_frame(key: str, version: StateVersion, body: bytes) -> bytes:
+    """Encode a state frame with cleartext header and encrypted/raw body."""
+    validate_state_key(key)
+    if not isinstance(version, StateVersion):
+        raise ValueError(f"Expected StateVersion, got {type(version).__name__}")
+    if not isinstance(body, (bytes, bytearray, memoryview)):
+        raise ValueError(f"Expected bytes-like body, got {type(body).__name__}")
+    body_bytes = bytes(body)
+
+    hdr_data = {
+        "author": version.author,
+        "hlc": [version.wall_ms, version.counter],
+        "key": key,
+        "v": 1,
+    }
+    hdr_bytes = json.dumps(hdr_data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(hdr_bytes) > MAX_STATE_HEADER_BYTES:
+        raise ValueError(f"State header size ({len(hdr_bytes)} bytes) exceeds 4 KiB limit")
+
+    return STATE_MAGIC + struct.pack(">I", len(hdr_bytes)) + hdr_bytes + body_bytes
+
+
+def decode_state_frame(frame: bytes | bytearray | memoryview) -> tuple[str, StateVersion, bytes]:
+    """Decode and strictly validate a binary state frame.
+
+    Returns:
+        (key, version, body_bytes)
+    Raises:
+        ValueError on any format or validation error.
+    """
+    raw = bytes(frame)
+    magic_len = len(STATE_MAGIC)
+    if len(raw) < magic_len + 4:
+        raise ValueError("Frame too short for state frame header")
+    if not raw.startswith(STATE_MAGIC):
+        raise ValueError(f"Invalid state magic: expected {STATE_MAGIC!r}")
+
+    hdr_len = struct.unpack(">I", raw[magic_len : magic_len + 4])[0]
+    if hdr_len > MAX_STATE_HEADER_BYTES:
+        raise ValueError(f"State header length {hdr_len} exceeds 4 KiB cap")
+
+    start_body = magic_len + 4 + hdr_len
+    if len(raw) < start_body:
+        raise ValueError("Truncated state frame: frame ends before header completed")
+
+    hdr_bytes = raw[magic_len + 4 : start_body]
+    try:
+        hdr = json.loads(hdr_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError(f"Invalid JSON in state header: {exc}") from exc
+
+    if not isinstance(hdr, dict):
+        raise ValueError("State header must be a JSON object")
+
+    if hdr.get("v") != 1:
+        raise ValueError(f"Unsupported state protocol version: {hdr.get('v')!r}")
+
+    key = hdr.get("key")
+    if not isinstance(key, str):
+        raise ValueError("Missing or invalid 'key' in state header")
+    validate_state_key(key)
+
+    author = hdr.get("author")
+    if not isinstance(author, str) or not author:
+        raise ValueError("Missing or empty 'author' in state header")
+
+    hlc = hdr.get("hlc")
+    if not isinstance(hlc, (list, tuple)) or len(hlc) != 2:
+        raise ValueError("State header 'hlc' must be a 2-element list [wall_ms, counter]")
+
+    wall_ms, counter = hlc[0], hlc[1]
+    if isinstance(wall_ms, bool) or not isinstance(wall_ms, int) or wall_ms < 0:
+        raise ValueError(f"State hlc wall_ms must be non-negative int, got {wall_ms!r}")
+    if isinstance(counter, bool) or not isinstance(counter, int) or counter < 0:
+        raise ValueError(f"State hlc counter must be non-negative int, got {counter!r}")
+
+    version = StateVersion(wall_ms=wall_ms, counter=counter, author=author)
+    body = raw[start_body:]
+    return (key, version, body)
 
 
 @dataclass(frozen=True)
@@ -118,6 +209,8 @@ def decode_control(text: str | Mapping[str, Any]) -> tuple[str, Any]:
     if msg_type == CONTROL_LEAVING:
         decode_leaving(data)
         return (CONTROL_LEAVING, True)
+    if msg_type == CONTROL_STATE_SYNC:
+        return (CONTROL_STATE_SYNC, None)
 
     raise ValueError(f"Unknown control message type: {msg_type!r}")
 

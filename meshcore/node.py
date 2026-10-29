@@ -17,7 +17,18 @@ from meshcore.addressing import (
     parse_address,
 )
 from meshcore.config import MeshConfig, PeerConfig, format_ws_url
-from meshcore.coordination import order
+from meshcore.coordination import (
+    HLC,
+    MAX_CLOCK_AHEAD_S,
+    MAX_STATE_KEYS_PER_GROUP,
+    MAX_STATE_PAYLOAD_BYTES,
+    StateEntry,
+    StateRegister,
+    StateStats,
+    StateVersion,
+    is_valid_state_key,
+    order,
+)
 from meshcore.crypto import GroupCipher, MeshCryptoError
 from meshcore.discovery import (
     Discovery,
@@ -27,7 +38,13 @@ from meshcore.discovery import (
 from meshcore.election import Election
 from meshcore.hub import HubServer
 from meshcore.link import Link, LinkError, probe_hub
-from meshcore.messages import Hello
+from meshcore.messages import (
+    Hello,
+    STATE_MAGIC,
+    decode_state_frame,
+    encode_state_frame,
+    encode_state_sync,
+)
 
 __all__ = ["Node", "NodeError"]
 
@@ -66,6 +83,7 @@ class Node:
         *,
         can_reach: Callable[[str, str], bool] | None = None,
         clock: Callable[[], float] | None = None,
+        wall_clock: Callable[[], float] | None = None,
         probe_url: Callable[[str, float], bool] | None = None,
         discovery_socket_factory: Callable[[], DiscoverySocket] | None = None,
     ) -> None:
@@ -74,6 +92,9 @@ class Node:
             can_reach if can_reach is not None else (lambda a, b: True)
         )
         self._clock: Callable[[], float] | None = clock
+        self._wall_clock: Callable[[], float] = wall_clock if wall_clock is not None else time.time
+        self._hlc = HLC(self._config.device_id, wall_clock=self._wall_clock)
+        self._state_register = StateRegister(MAX_STATE_KEYS_PER_GROUP)
         self._probe_url: Callable[[str, float], bool] = (
             probe_url
             if probe_url is not None
@@ -99,6 +120,17 @@ class Node:
             self._cipher = GroupCipher(config.e2e_key)
 
         self._dropped_undecryptable: int = 0
+
+        self._stat_published: int = 0
+        self._stat_sent: int = 0
+        self._stat_received: int = 0
+        self._stat_applied: int = 0
+        self._stat_ignored: int = 0
+        self._stat_rejected_skew: int = 0
+        self._stat_rejected_invalid: int = 0
+        self._state_stats_lock = threading.Lock()
+        self._last_skew_warn_by_author: dict[str, float] = {}
+        self._state_callbacks: list[Callable[[str, str, bytes], None]] = []
 
         self._hub: HubServer | None = None
         self._election: Election | None = None
@@ -238,6 +270,10 @@ class Node:
             self._stopped = False
 
             if self._config.role == "relay":
+                relay_registers = {
+                    g.id: StateRegister(MAX_STATE_KEYS_PER_GROUP)
+                    for g in self._config.serve_groups
+                }
                 self._hub = HubServer(
                     groups=self._config.serve_groups,
                     host=self._config.bind,
@@ -245,6 +281,8 @@ class Node:
                     max_frame_bytes=self._config.max_frame_bytes,
                     device_id=None,
                     on_data=None,
+                    state_registers=relay_registers,
+                    wall_clock=time.time,
                 )
                 self._hub.start()
                 return
@@ -263,6 +301,10 @@ class Node:
                 will_hub=self._config.will_hub,
                 group_id=self._config.group_id,
                 on_data=self._on_hub_data,
+                state_registers={self._config.group_id: self._state_register},
+                wall_clock=self._wall_clock,
+                on_state_stat=self._record_state_stat,
+                on_state_won=self._on_hub_state_won,
             )
             self._hub.start()
 
@@ -381,6 +423,129 @@ class Node:
                     link.send(frame)
                 except LinkError as exc:
                     raise NodeError(str(exc)) from exc
+
+    @property
+    def state_stats(self) -> StateStats:
+        """Frozen snapshot of state channel counters."""
+        with self._state_stats_lock:
+            return StateStats(
+                published=self._stat_published,
+                sent=self._stat_sent,
+                received=self._stat_received,
+                applied=self._stat_applied,
+                ignored=self._stat_ignored,
+                rejected_skew=self._stat_rejected_skew,
+                rejected_invalid=self._stat_rejected_invalid,
+            )
+
+    def _record_state_stat(self, name: str, count: int = 1) -> None:
+        with self._state_stats_lock:
+            if name == "published":
+                self._stat_published += count
+            elif name == "sent":
+                self._stat_sent += count
+            elif name == "received":
+                self._stat_received += count
+            elif name == "applied":
+                self._stat_applied += count
+            elif name == "ignored":
+                self._stat_ignored += count
+            elif name == "rejected_skew":
+                self._stat_rejected_skew += count
+            elif name == "rejected_invalid":
+                self._stat_rejected_invalid += count
+
+    def _log_skew_warning(self, key: str, author: str, wall_ms: int, now_ms: int) -> None:
+        now_s = self._wall_clock()
+        lead_s = int((wall_ms - now_ms) / 1000)
+        last_warn = self._last_skew_warn_by_author.get(author, 0.0)
+        if now_s - last_warn >= 60.0:
+            self._last_skew_warn_by_author[author] = now_s
+            logger.warning(
+                "rejected state %s from %s: version %d s ahead of local clock (max %d s)",
+                key,
+                author,
+                lead_s,
+                MAX_CLOCK_AHEAD_S,
+            )
+
+    def on_state(self, callback: Callable[[str, str, bytes], None]) -> None:
+        """Register a callback (key, author, payload) for newly-applied received states."""
+        self._state_callbacks.append(callback)
+
+    def get_state(self, key: str) -> bytes | None:
+        """Return the latest plaintext this node knows for key, or None."""
+        if self.is_relay:
+            return None
+        return self._state_register.get_payload(key)
+
+    def get_state_version(self, key: str) -> StateVersion | None:
+        """Return the latest StateVersion this node knows for key, or None."""
+        if self.is_relay:
+            return None
+        return self._state_register.get_version(key)
+
+    def publish_state(self, key: str, payload: bytes | bytearray | memoryview) -> None:
+        """Local-first state publish with total ordering via HLC.
+
+        Raises NodeError for relay nodes, bad keys, non-bytes payloads, or oversized values.
+        """
+        if self.is_relay:
+            raise NodeError("Relay nodes cannot publish")
+        if not is_valid_state_key(key):
+            raise NodeError(f"Invalid state key: {key!r}")
+        if not isinstance(payload, (bytes, bytearray, memoryview)):
+            raise NodeError(f"payload must be bytes-like, got {type(payload).__name__}")
+
+        raw_bytes = bytes(payload)
+        if len(raw_bytes) > MAX_STATE_PAYLOAD_BYTES:
+            raise NodeError(
+                f"state value too large: {len(raw_bytes)} bytes exceeds cap {MAX_STATE_PAYLOAD_BYTES}"
+            )
+
+        version, corrected = self._hlc.publish()
+
+        if self._cipher is not None:
+            try:
+                body = self._cipher.encrypt(raw_bytes)
+            except Exception as exc:
+                raise NodeError(f"Encryption failed: {exc}") from exc
+        else:
+            body = raw_bytes
+
+        try:
+            frame = encode_state_frame(key, version, body)
+        except Exception as exc:
+            raise NodeError(str(exc)) from exc
+
+        if len(frame) > self._config.max_frame_bytes:
+            raise NodeError(
+                f"state frame too large: {len(frame)} bytes exceeds max_frame_bytes {self._config.max_frame_bytes}"
+            )
+
+        # Merge locally; on clock correction replace self-authored poisoned entry
+        self._state_register.merge(key, version, raw_bytes, frame_bytes=frame, force=corrected)
+        with self._state_stats_lock:
+            self._stat_published += 1
+
+        # Best-effort send:
+        if self.is_hub:
+            if self._hub is not None and self._hub.running:
+                sent_count = self._hub.submit_local_state(
+                    key, version, body, frame, group_id=self._config.group_id
+                )
+                with self._state_stats_lock:
+                    self._stat_sent += sent_count
+        else:
+            with self._link_lock:
+                link = self._link
+                if link is not None and link.connected:
+                    try:
+                        link.send(frame)
+                        with self._state_stats_lock:
+                            self._stat_sent += 1
+                    except Exception:
+                        pass
 
     def roster(self) -> list[Hello]:
         """Return the current cluster roster sorted by coordination.order."""
@@ -530,6 +695,7 @@ class Node:
                     thread_name=f"meshcore-link-{self.device_id}",
                     on_roster=self._handle_client_roster,
                     on_payload=self._handle_client_payload,
+                    on_connected=self._on_link_connected,
                 )
                 try:
                     link.connect()
@@ -556,7 +722,83 @@ class Node:
                 merged.pop(self._config.relay.device_id, None)
             self._election.set_devices(merged.values())
 
+    def _on_link_connected(self) -> None:
+        with self._link_lock:
+            link = self._link
+        if link is None or not link.connected:
+            return
+
+        try:
+            link.send_control(encode_state_sync())
+        except Exception:
+            return
+
+        for key, entry in self._state_register.items():
+            if entry.frame_bytes is not None:
+                frame = entry.frame_bytes
+            else:
+                if self._cipher is not None:
+                    body = self._cipher.encrypt(entry.payload)
+                else:
+                    body = entry.payload
+                try:
+                    frame = encode_state_frame(key, entry.version, body)
+                except Exception:
+                    continue
+            try:
+                link.send(frame)
+                with self._state_stats_lock:
+                    self._stat_sent += 1
+            except Exception:
+                pass
+
     def _handle_client_payload(self, sender_id: str | None, payload: bytes) -> None:
+        if payload.startswith(STATE_MAGIC):
+            with self._state_stats_lock:
+                self._stat_received += 1
+            try:
+                key, version, body = decode_state_frame(payload)
+            except ValueError:
+                with self._state_stats_lock:
+                    self._stat_rejected_invalid += 1
+                return
+
+            now_ms = int(self._wall_clock() * 1000)
+            if version.wall_ms > now_ms + MAX_CLOCK_AHEAD_S * 1000:
+                with self._state_stats_lock:
+                    self._stat_rejected_skew += 1
+                self._log_skew_warning(key, version.author, version.wall_ms, now_ms)
+                return
+
+            if self._cipher is not None:
+                try:
+                    decrypted = self._cipher.decrypt(body)
+                except MeshCryptoError:
+                    with self._lifecycle_lock:
+                        self._dropped_undecryptable += 1
+                    return
+                except Exception:
+                    with self._lifecycle_lock:
+                        self._dropped_undecryptable += 1
+                    return
+            else:
+                decrypted = body
+
+            self._hlc.accept(version.wall_ms, version.counter)
+            won = self._state_register.merge(key, version, decrypted, frame_bytes=payload)
+            if won:
+                with self._state_stats_lock:
+                    self._stat_applied += 1
+                for cb in list(self._state_callbacks):
+                    try:
+                        cb(key, version.author, decrypted)
+                    except Exception:
+                        pass
+            else:
+                with self._state_stats_lock:
+                    self._stat_ignored += 1
+            return
+
         if self._cipher is not None:
             try:
                 decrypted = self._cipher.decrypt(payload)
@@ -574,6 +816,36 @@ class Node:
         for cb in list(self._receive_callbacks):
             try:
                 cb(sender_id, decrypted)
+            except Exception:
+                pass
+
+    def _on_hub_state_won(
+        self, key: str, version: StateVersion, body: bytes, frame: bytes
+    ) -> None:
+        if self._cipher is not None:
+            try:
+                decrypted = self._cipher.decrypt(body)
+            except MeshCryptoError:
+                with self._lifecycle_lock:
+                    self._dropped_undecryptable += 1
+                return
+            except Exception:
+                with self._lifecycle_lock:
+                    self._dropped_undecryptable += 1
+                return
+        else:
+            decrypted = body
+
+        self._state_register.force_set(
+            key, StateEntry(version, decrypted, frame_bytes=frame)
+        )
+        self._hlc.accept(version.wall_ms, version.counter)
+        with self._state_stats_lock:
+            self._stat_applied += 1
+
+        for cb in list(self._state_callbacks):
+            try:
+                cb(key, version.author, decrypted)
             except Exception:
                 pass
 

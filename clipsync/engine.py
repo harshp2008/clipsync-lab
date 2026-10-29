@@ -32,7 +32,7 @@ from .protocol import (
     decode_frame,
     encode_frame,
 )
-from .transport import Transport, TransportError
+from .transport import FrameTooLarge, Transport, TransportError
 
 __all__ = ["SyncEngine", "SyncStats"]
 
@@ -41,7 +41,11 @@ _MAX_DEVICE_ID = 128
 
 @dataclass
 class SyncStats:
-    """Counters for one :meth:`SyncEngine.poll_once` call (cumulative per call)."""
+    """Counters for one :meth:`SyncEngine.poll_once` call (cumulative per call).
+
+    In relay mode, ``sent`` counts frames handed to the transport relay.
+    In state channel mode, ``sent`` counts frames published to the channel.
+    """
 
     sent: int = 0
     received: int = 0
@@ -123,6 +127,10 @@ class SyncEngine:
             frame = self._outbox[0]
             try:
                 self._transport.send(frame)
+            except FrameTooLarge:
+                self._outbox.popleft()
+                stats.rejected_too_large += 1
+                continue
             except TransportError:
                 stats.send_errors += 1
                 break
