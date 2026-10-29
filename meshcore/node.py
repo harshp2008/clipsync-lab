@@ -17,7 +17,18 @@ from meshcore.addressing import (
     parse_address,
 )
 from meshcore.config import MeshConfig, PeerConfig, format_ws_url
-from meshcore.coordination import order
+from meshcore.coordination import (
+    HLC,
+    MAX_CLOCK_AHEAD_S,
+    MAX_STATE_KEYS_PER_GROUP,
+    MAX_STATE_PAYLOAD_BYTES,
+    StateEntry,
+    StateRegister,
+    StateStats,
+    StateVersion,
+    is_valid_state_key,
+    order,
+)
 from meshcore.crypto import GroupCipher, MeshCryptoError
 from meshcore.discovery import (
     Discovery,
@@ -27,7 +38,13 @@ from meshcore.discovery import (
 from meshcore.election import Election
 from meshcore.hub import HubServer
 from meshcore.link import Link, LinkError, probe_hub
-from meshcore.messages import Hello
+from meshcore.messages import (
+    Hello,
+    STATE_MAGIC,
+    decode_state_frame,
+    encode_state_frame,
+    encode_state_sync,
+)
 
 __all__ = ["Node", "NodeError"]
 
@@ -66,6 +83,7 @@ class Node:
         *,
         can_reach: Callable[[str, str], bool] | None = None,
         clock: Callable[[], float] | None = None,
+        wall_clock: Callable[[], float] | None = None,
         probe_url: Callable[[str, float], bool] | None = None,
         discovery_socket_factory: Callable[[], DiscoverySocket] | None = None,
     ) -> None:
@@ -74,6 +92,9 @@ class Node:
             can_reach if can_reach is not None else (lambda a, b: True)
         )
         self._clock: Callable[[], float] | None = clock
+        self._wall_clock: Callable[[], float] = wall_clock if wall_clock is not None else time.time
+        self._hlc = HLC(self._config.device_id, wall_clock=self._wall_clock)
+        self._state_register = StateRegister(MAX_STATE_KEYS_PER_GROUP)
         self._probe_url: Callable[[str, float], bool] = (
             probe_url
             if probe_url is not None
@@ -99,6 +120,17 @@ class Node:
             self._cipher = GroupCipher(config.e2e_key)
 
         self._dropped_undecryptable: int = 0
+
+        self._stat_published: int = 0
+        self._stat_sent: int = 0
+        self._stat_received: int = 0
+        self._stat_applied: int = 0
+        self._stat_ignored: int = 0
+        self._stat_rejected_skew: int = 0
+        self._stat_rejected_invalid: int = 0
+        self._state_stats_lock = threading.Lock()
+        self._last_skew_warn_by_author: dict[str, float] = {}
+        self._state_callbacks: list[Callable[[str, str, bytes], None]] = []
 
         self._hub: HubServer | None = None
         self._election: Election | None = None

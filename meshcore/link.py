@@ -102,6 +102,7 @@ class Link:
         thread_name: str = "meshcore-link",
         on_roster: Callable[[list[Hello]], None] | None = None,
         on_payload: Callable[[str | None, bytes], None] | None = None,
+        on_connected: Callable[[], None] | None = None,
     ) -> None:
         self._url: str = url
         self._token: str = token
@@ -113,6 +114,7 @@ class Link:
         self._thread_name: str = thread_name
         self._on_roster: Callable[[list[Hello]], None] | None = on_roster
         self._on_payload: Callable[[str | None, bytes], None] | None = on_payload
+        self._on_connected: Callable[[], None] | None = on_connected
 
         self._roster: list[Hello] = []
         self._roster_lock = threading.Lock()
@@ -158,6 +160,10 @@ class Link:
     def set_on_payload(self, callback: Callable[[str | None, bytes], None] | None) -> None:
         """Set or update the callback for incoming app payloads."""
         self._on_payload = callback
+
+    def set_on_connected(self, callback: Callable[[], None] | None) -> None:
+        """Set or update the callback invoked after successful connection/hello."""
+        self._on_connected = callback
 
     def __enter__(self) -> Link:
         self.connect()
@@ -254,6 +260,9 @@ class Link:
             for task in asyncio.all_tasks(self._loop):
                 task.cancel()
 
+    def _is_loop_thread(self) -> bool:
+        return threading.current_thread() is self._thread
+
     def send(self, frame: bytes | bytearray | memoryview) -> None:
         """Send an opaque frame to the hub.
 
@@ -268,14 +277,48 @@ class Link:
             raise LinkError("Link is disconnected")
 
         try:
-            future = asyncio.run_coroutine_threadsafe(
-                self._async_send(frame_bytes), self._loop
-            )
-            future.result(timeout=self._connect_timeout)
+            if self._is_loop_thread():
+                self._loop.create_task(self._async_send(frame_bytes))
+            else:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._async_send(frame_bytes), self._loop
+                )
+                future.result(timeout=self._connect_timeout)
         except LinkError:
             raise
         except Exception as exc:
             raise LinkError(f"Send failed: {exc}") from exc
+
+    def send_control(self, text: str) -> None:
+        """Send a text control frame to the hub.
+
+        Preserves call order. Raises LinkError if disconnected.
+        """
+        if not isinstance(text, str):
+            raise LinkError(f"Expected str for control frame, got {type(text).__name__}")
+        if not self.connected or self._ws is None or self._loop is None:
+            raise LinkError("Link is disconnected")
+
+        try:
+            if self._is_loop_thread():
+                self._loop.create_task(self._async_send_text(text))
+            else:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._async_send_text(text), self._loop
+                )
+                future.result(timeout=self._connect_timeout)
+        except LinkError:
+            raise
+        except Exception as exc:
+            raise LinkError(f"Send failed: {exc}") from exc
+
+    async def _async_send_text(self, text: str) -> None:
+        assert self._send_lock is not None
+        async with self._send_lock:
+            ws = self._ws
+            if ws is None or not getattr(ws, "open", False):
+                raise LinkError("Link is disconnected")
+            await ws.send(text)
 
     async def _async_send(self, frame: bytes) -> None:
         assert self._send_lock is not None
@@ -333,6 +376,12 @@ class Link:
                 if self._hello is not None:
                     hello_msg = encode_hello_message(self._hello)
                     await ws.send(hello_msg)
+
+                if self._on_connected is not None:
+                    try:
+                        self._on_connected()
+                    except Exception:
+                        pass
 
                 if first_attempt:
                     first_attempt = False
