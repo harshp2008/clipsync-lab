@@ -23,7 +23,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass
 from typing import Callable, Deque
 
-from .clipboard import ClipboardBackend, ClipboardError
+from .clipboard import CLIPBOARD_FAILURES, ClipboardBackend
 from .crypto import Codec, CryptoError
 from .protocol import (
     ClipMessage,
@@ -57,6 +57,7 @@ class SyncStats:
     rejected_too_large: int = 0
     send_errors: int = 0
     recv_errors: int = 0
+    clipboard_errors: int = 0
     queued: int = 0
 
 
@@ -96,6 +97,7 @@ class SyncEngine:
         self._seen_ids: OrderedDict[str, float] = OrderedDict()
         self._last_seq: dict[str, int] = {}
         self._last_local_hash: str | None = None
+        self.last_clipboard_error: str | None = None
         self._outbox: Deque[bytes] = deque()
         self._seq_gaps = 0
         self._overflow_dropped = 0
@@ -105,6 +107,7 @@ class SyncEngine:
     def poll_once(self) -> SyncStats:
         """Flush pending sends, receive/apply everything available, then send local."""
         stats = SyncStats()
+        self.last_clipboard_error = None
         self.flush_outbox(stats)
         frames: list[bytes]
         try:
@@ -190,8 +193,13 @@ class SyncEngine:
 
         try:
             self._clipboard.write(msg.payload)
-        except ClipboardError:
+        except CLIPBOARD_FAILURES as exc:
+            # A backend failure is expected at run time (locked session, clipboard
+            # manager restart, missing display): count it and keep the poll loop
+            # alive instead of letting it kill the daemon.
+            self.last_clipboard_error = f"write: {exc}"
             stats.dropped_invalid += 1
+            stats.clipboard_errors += 1
             return
 
         if last is not None and msg.seq > last + 1:
@@ -205,8 +213,12 @@ class SyncEngine:
     def _read_local(self, stats: SyncStats) -> None:
         try:
             payload = self._clipboard.read()
-        except ClipboardError:
+        except CLIPBOARD_FAILURES + (PayloadTooLarge,) as exc:
+            # PayloadTooLarge is the backend rejecting an oversized clipboard; it is
+            # a read failure like any other, not a daemon exit.
+            self.last_clipboard_error = f"read: {exc}"
             stats.dropped_invalid += 1
+            stats.clipboard_errors += 1
             return
         if payload is None:
             return

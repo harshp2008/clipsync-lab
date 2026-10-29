@@ -19,7 +19,14 @@ import threading
 import time
 from typing import Any, Callable, Sequence
 
-from .clipboard import ClipboardBackend, FileClipboardBackend, WlClipboardBackend
+from .clipboard import (
+    CLIPBOARD_FAILURES,
+    ClipboardBackend,
+    FileClipboardBackend,
+    WlClipboardBackend,
+    XclipClipboardBackend,
+    backend_unavailable_reason,
+)
 from .config import ConfigError, DaemonConfig, ensure_no_placeholders, load_config
 from .crypto import Codec, FernetCodec
 from .engine import SyncEngine, SyncStats
@@ -32,6 +39,7 @@ __all__ = [
     "build_clipboard",
     "build_codec",
     "build_transport",
+    "check_clipboard_backend",
     "main",
     "wait_or_stop",
 ]
@@ -128,6 +136,7 @@ class ClipboardDaemon:
         transport: Transport,
         codec: Codec | None = None,
         backoff: BackoffPolicy | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._config = config
         self._clipboard = clipboard
@@ -141,6 +150,18 @@ class ClipboardDaemon:
             )
         else:
             self.backoff = backoff
+        # Clipboard failures back off from the normal poll interval up to 5 s and
+        # reset on the first successful poll.  No jitter: the delay only hides a
+        # broken clipboard and a deterministic sequence is easier to reason about.
+        interval = max(float(config.poll_interval), 1e-3)
+        self.clipboard_backoff = BackoffPolicy(
+            base=interval,
+            max_delay=max(5.0, interval),
+            jitter=0.0,
+        )
+        self._clock = clock
+        self._clipboard_failures = 0
+        self._clipboard_warned: dict[str, float] = {}
         self._engine = SyncEngine(
             device_id=config.device_id,
             clipboard=clipboard,
@@ -252,7 +273,16 @@ class ClipboardDaemon:
                     consecutive_failures = 0
 
             try:
-                self.poll_once()
+                stats = self.poll_once()
+            except CLIPBOARD_FAILURES as exc:
+                # Belt and braces: the backends already convert every OS-level
+                # failure into ClipboardError and the engine counts those instead of
+                # raising, but a clipboard failure must never kill the loop.
+                delay = self._note_clipboard_failure(f"{type(exc).__name__}: {exc}")
+                count += 1
+                if wait_or_stop(stop_event, delay, sleep=sleep):
+                    break
+                continue
             except TransportError as exc:
                 logger.warning("Transport error during poll: %s", exc)
                 delay = self.backoff.delay(consecutive_failures)
@@ -261,6 +291,16 @@ class ClipboardDaemon:
                 if wait_or_stop(stop_event, delay, sleep=sleep):
                     break
                 continue
+
+            if stats.clipboard_errors:
+                message = self._engine.last_clipboard_error or "clipboard backend failed"
+                delay = self._note_clipboard_failure(message)
+                count += 1
+                if wait_or_stop(stop_event, delay, sleep=sleep):
+                    break
+                continue
+
+            self._clipboard_failures = 0
 
             if not self._transport.connected:
                 logger.warning("Transport disconnected after poll")
@@ -284,6 +324,28 @@ class ClipboardDaemon:
 
         return count
 
+    _CLIPBOARD_WARN_INTERVAL = 60.0
+
+    def _note_clipboard_failure(self, message: str) -> float:
+        """Count a clipboard failure, log it rate-limited, return the retry delay.
+
+        A WARNING is emitted at most once per 60 s per distinct error message, so a
+        wedged clipboard does not flood the journal while it stays broken.
+        """
+        self._clipboard_failures += 1
+        now = self._clock()
+        last = self._clipboard_warned.get(message)
+        if last is None or now - last >= self._CLIPBOARD_WARN_INTERVAL:
+            logger.warning(
+                "Clipboard backend error (retrying, %d consecutive failure(s)): %s",
+                self._clipboard_failures,
+                message,
+            )
+            self._clipboard_warned[message] = now
+            while len(self._clipboard_warned) > 32:
+                self._clipboard_warned.pop(next(iter(self._clipboard_warned)))
+        return self.clipboard_backoff.delay(self._clipboard_failures - 1)
+
     def close(self) -> None:
         """Idempotently close the underlying transport."""
         self._transport.close()
@@ -297,12 +359,34 @@ def build_codec(config: DaemonConfig) -> Codec | None:
 
 
 def build_clipboard(config: DaemonConfig) -> ClipboardBackend:
-    """Build the configured clipboard backend (Wayland unless explicitly file)."""
+    """Build the configured clipboard backend.
+
+    ``wayland`` (the default, wl-clipboard), ``xclip`` (opt-in XWayland backend) or
+    ``file`` (headless/test only).  This only constructs the object; it never runs a
+    clipboard program and never probes the environment (see
+    :func:`check_clipboard_backend` for the startup check).
+    """
     if config.clipboard_backend == "file":
         if config.clipboard_file is None:
             raise ValueError("clipboard_backend='file' requires clipboard_file")
         return FileClipboardBackend(config.clipboard_file)
+    if config.clipboard_backend == "xclip":
+        return XclipClipboardBackend()
     return WlClipboardBackend()
+
+
+def check_clipboard_backend(config: DaemonConfig) -> None:
+    """Raise :class:`ConfigError` if the configured backend cannot work here.
+
+    A missing ``xclip``/``wl-paste`` binary or an unset ``DISPLAY`` is a startup
+    configuration problem (clear exit code 2), not a crash loop that retries every
+    poll forever.
+    """
+    problem = backend_unavailable_reason(config.clipboard_backend)
+    if problem is not None:
+        raise ConfigError(
+            f"clipboard_backend = {config.clipboard_backend!r}: {problem}"
+        )
 
 
 def build_transport(config: DaemonConfig) -> Transport:
@@ -419,6 +503,8 @@ def main(
         config_path = Path(args.config).expanduser()
         config = load_config(config_path)
         ensure_no_placeholders(config)
+        if clipboard_factory is None and config.role != "relay":
+            check_clipboard_backend(config)
     except ConfigError as exc:
         sys.stderr.write(f"Configuration error: {exc}\n")
         return 2
@@ -482,6 +568,11 @@ def main(
             stats_json = json.dumps(dataclasses.asdict(stats), separators=(",", ":"))
             sys.stdout.write(stats_json + "\n")
             sys.stdout.flush()
+        except CLIPBOARD_FAILURES as exc:
+            # A single bad read must not turn --once into a traceback; the exit code
+            # for a successful run stays 0 and the failure is reported on stderr.
+            sys.stderr.write(f"Clipboard error: {exc}\n")
+            return 0
         finally:
             daemon.close()
         return 0

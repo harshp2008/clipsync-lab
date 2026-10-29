@@ -103,6 +103,30 @@ The default clipboard backend is Wayland (`wl-paste`/`wl-copy`). Copy text as us
 it syncs to the other members of the group. A headless machine has no real clipboard;
 use the file backend described next only for tests.
 
+### Clipboard backends on GNOME Wayland
+
+GNOME's compositor (Mutter) does not implement the wl-clipboard data-control
+protocol, so the default Wayland backend falls back to the normal data device. Every
+poll (0.2 s in the example config) therefore opens a transient window: the taskbar
+flickers constantly, some
+copies take seconds, and one `wl-paste` hang used to be able to kill the daemon (it
+no longer can; see below). On such a session use the opt-in X11/XWayland backend
+instead, which talks to the XWayland clipboard bridge and returns in milliseconds
+with no window and no focus requirement:
+
+```toml
+clipboard_backend = "xclip"   # needs the xclip package and a set DISPLAY
+```
+
+`wayland` stays the default (this run deliberately did not change it). The daemon
+refuses to start with a clear config error (exit code 2) if the selected backend's
+programs are missing — `xclip` for `"xclip"`, `wl-paste`/`wl-copy` for `"wayland"` —
+or if `DISPLAY` is unset for `"xclip"`. At run time no clipboard read/write failure
+takes the daemon down: it logs a WARNING at most once per 60 s per distinct error,
+backs off from `poll_interval` up to 5 s, and resumes on the first good poll. Manual
+verification steps are in
+[`docs/xclip-manual-checklist.md`](docs/xclip-manual-checklist.md).
+
 ### 5. Prove it without touching your clipboard
 
 ```bash

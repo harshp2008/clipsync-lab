@@ -936,3 +936,62 @@ frozen test was edited; the fixes were production/docs/smoke-only.
   never win while wrong, cannot move another node's floor (S14), and recovers without
   a restart (S13); a wrong-key member applies nothing. Replay is harmless under LWW.
   The token still crosses `ws://` in cleartext without TLS (H15), unchanged.
+
+## D64 — Clipboard failures are contained, and xclip is an opt-in backend (2026-10-29)
+Run `feat/xclip-backend`, cut from `main` 644e6e6 (337 tests), direct work (no agy job).
+
+- **Where failures are wrapped.** `clipsync.clipboard._run_command` converts every
+  runner exception (`subprocess.TimeoutExpired`, `FileNotFoundError`, other `OSError`)
+  into `ClipboardError`, and both real backends call it. The exported tuple
+  `CLIPBOARD_FAILURES = (ClipboardError, TimeoutExpired, OSError)` is the single
+  contract used by the engine and the daemon. Why not only in the engine: a backend
+  that leaks a raw `TimeoutExpired` would still crash anything else that calls it, and
+  the xclip runner needs the same conversion in two places.
+- **The engine keeps its non-raising contract.** Existing test
+  `test_clipboard_read_failure_is_counted_not_raised` requires `poll_once()` to count a
+  read failure instead of raising, so the engine catches `CLIPBOARD_FAILURES` (plus
+  `PayloadTooLarge` on the read path: an oversized real clipboard used to be able to
+  escape the old wl backend the same way) and adds `SyncStats.clipboard_errors` +
+  `SyncEngine.last_clipboard_error`. The daemon reads that signal after each poll; a
+  raw failure that still escapes is caught around `poll_once()` as a second line of
+  defence. This is "catch at the poll loop" without breaking the engine API/tests.
+- **Rate-limited logging and backoff live in the daemon.** `ClipboardDaemon` keeps a
+  `dict[message, last_logged_monotonic]`, logs a WARNING at most once per 60 s per
+  distinct message (capped at 32 keys), and backs off with `BackoffPolicy(base=
+  poll_interval, max_delay=max(5 s, poll_interval), jitter=0)` — first retry at
+  `poll_interval`, then doubling, capped at 5 s, reset on the first poll with zero
+  clipboard errors. Jitter is 0 because the delay only hides a broken clipboard and a
+  deterministic sequence is testable; the transport backoff keeps its jitter. An
+  injected `clock` makes the 60 s window testable without sleeping. Iteration counting,
+  exit codes (`0`/`1`/`2`) and shutdown handling are unchanged.
+- **Missing binaries are a config error, not a loop.** `main()` calls
+  `check_clipboard_backend` (unless a clipboard factory is injected or `role="relay"`)
+  and exits 2 with `Configuration error: …` naming the missing program (`xclip`, or
+  `wl-paste`/`wl-copy`) or an unset `DISPLAY`. `build_clipboard` stays pure: the frozen
+  acceptance test constructs the default backend on this machine without probing it.
+- **xclip mechanics.** `TARGETS` first (`xclip -selection clipboard -o -t TARGETS`):
+  rc != 0 or a "target not available"/"no selection" message means an empty clipboard,
+  never an error. Target priority mirrors `choose_mime` (images first, then
+  `UTF8_STRING` → `STRING` → `text/plain;charset=utf-8`, then `text/plain`/
+  `text/html`/`text/uri-list`); X atom spelling is preserved. `UTF8_STRING`/`STRING`/
+  `text` map to wire MIME `text/plain`, so payload equality and the content-hash echo
+  guard behave exactly as with the wl backend (verified write→read→no re-publish with
+  the fake runner). `text/plain` is written as `UTF8_STRING`; `text/html`,
+  `text/uri-list` and images keep their MIME as the target. Caps are the shared
+  `MAX_TEXT_BYTES`/`MAX_IMAGE_BYTES` with the same `PayloadTooLarge` semantics.
+- **xclip process handling.** Read timeout 2 s, write timeout 3 s, every child in its
+  own session/process group, and on timeout `SIGKILL` the group and reap the parent.
+  Writes use `stdin=PIPE`, `stdout/stderr=DEVNULL`: `xclip -i` forks a background
+  child that keeps owning the selection and inherits its parent's descriptors, so
+  piping stdout/stderr would make the parent wait on that child forever. Reads keep
+  pipes (they are expected to exit). The direct parent is always `wait()`-ed, so no
+  zombies; the forked owner is deliberately *not* killed on success (that is the
+  clipboard ownership) and is not a child of the daemon.
+- **Default unchanged.** `wayland` stays the default; the owner question and a
+  recommendation for switching on Wayland-with-XWayland sessions is H31.
+- **Config.** `clipboard_backend` now accepts `"xclip"` in addition to `"wayland"` and
+  `"file"`; unknown values still raise `ConfigError` (frozen D6 acceptance unchanged).
+  No new dependency; the backend shells out to the system `xclip` only.
+- **Docs.** README "Clipboard backends on GNOME Wayland", an xclip comment in
+  `examples/member-laptop.toml`, the checklist `docs/xclip-manual-checklist.md`, and
+  H31 (never executed here).
