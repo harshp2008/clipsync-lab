@@ -16,7 +16,12 @@ from contextlib import contextmanager
 
 import pytest
 
-from clipsync.clipboard import ClipboardError, SubprocessRunner, WlClipboardBackend, XclipClipboardBackend
+from clipsync.clipboard import (
+    ClipboardError,
+    SubprocessRunner,
+    WlClipboardBackend,
+    XclipClipboardBackend,
+)
 from clipsync.config import DaemonConfig
 from clipsync.daemon import ClipboardDaemon, main
 from clipsync.engine import SyncEngine
