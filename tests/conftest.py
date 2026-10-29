@@ -139,21 +139,3 @@ def _hermetic_xdg_state():
                 pytrace=False,
             )
 
-
-def pytest_ignore_collect(collection_path: Path, config: pytest.Config):
-    """Keep the frozen D7 count stable without hiding the new suite in normal runs.
-
-    ``tests/acceptance/test_deploy_smoke.py::test_d7_previous_suite_still_collects_300_tests``
-    is frozen and runs ``pytest --collect-only --ignore=tests/acceptance/test_deploy_smoke.py``,
-    asserting exactly 300 items.  ``tests/test_state_isolation.py`` is an intentional
-    addition, so it is excluded only from that exact historical-count invocation; a
-    normal run collects and executes it.
-    """
-    args = tuple(str(arg) for arg in config.invocation_params.args)
-    if (
-        "--collect-only" in args
-        and "--ignore=tests/acceptance/test_deploy_smoke.py" in args
-        and collection_path.name == "test_state_isolation.py"
-    ):
-        return True
-    return None

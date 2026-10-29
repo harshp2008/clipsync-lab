@@ -4,27 +4,40 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import hmac
 from http import HTTPStatus
 import json
+import logging
 import threading
+import time
 from typing import Any, Callable, Iterable
 
 import websockets
 from websockets.server import WebSocketServer
 
 from meshcore.config import DEFAULT_MAX_FRAME_BYTES, GroupConfig
-from meshcore.coordination import order
+from meshcore.coordination import (
+    MAX_CLOCK_AHEAD_S,
+    MAX_STATE_KEYS_PER_GROUP,
+    StateRegister,
+    StateVersion,
+    order,
+)
 from meshcore.messages import (
     CONTROL_HELLO,
     CONTROL_LEAVING,
+    CONTROL_STATE_SYNC,
     Hello,
+    STATE_MAGIC,
     decode_hello,
+    decode_state_frame,
     encode_roster,
     wrap_data_envelope,
 )
 
 RELAY_MAX_FRAME_BYTES: int = DEFAULT_MAX_FRAME_BYTES
+logger = logging.getLogger("meshcore.hub")
 
 __all__ = [
     "DEFAULT_MAX_FRAME_BYTES",
@@ -70,6 +83,10 @@ class HubServer:
         on_data: Callable[[str | None, bytes], None] | None = None,
         group_id: str = "default",
         groups: Iterable[GroupConfig] | None = None,
+        state_registers: dict[str, StateRegister] | None = None,
+        wall_clock: Callable[[], float] | None = None,
+        on_state_stat: Callable[[str, int], None] | None = None,
+        on_state_won: Callable[[str, StateVersion, bytes, bytes], None] | None = None,
     ) -> None:
         if not isinstance(host, str) or len(host) == 0:
             raise ValueError("host must be a non-empty string")
@@ -122,6 +139,25 @@ class HubServer:
         self._clients: dict[Any, asyncio.Queue[bytes | str]] = {}
         self._hello_by_ws: dict[Any, Hello] = {}
         self._group_by_ws: dict[Any, str] = {}
+        self._state_capable_ws: set[Any] = set()
+        # Per client, the last state version we put on its wire. Guards the
+        # snapshot/forward overlap: a client must not receive the same version
+        # twice (S7 counts frames; duplicates would also be wasted traffic).
+        self._state_sent_versions: dict[Any, dict[str, StateVersion]] = {}
+
+        if state_registers is not None:
+            self._state_registers = dict(state_registers)
+        else:
+            self._state_registers = {
+                g.id: StateRegister(MAX_STATE_KEYS_PER_GROUP) for g in self._groups
+            }
+        self._wall_clock: Callable[[], float] = (
+            wall_clock if wall_clock is not None else time.time
+        )
+        self._on_state_stat = on_state_stat
+        self._on_state_won = on_state_won
+        self._last_skew_warn_by_author: dict[str, float] = {}
+
         self._lock = threading.Lock()
         self._clients_lock = threading.Lock()
         self._started_event = threading.Event()
@@ -224,6 +260,8 @@ class HubServer:
                 self._clients.clear()
                 self._hello_by_ws.clear()
                 self._group_by_ws.clear()
+                self._state_capable_ws.clear()
+                self._state_sent_versions.clear()
 
     def _signal_stop(self) -> None:
         if self._stop_event is not None and not self._stop_event.is_set():
@@ -286,6 +324,67 @@ class HubServer:
         loop = self._loop
         if loop is not None and loop.is_running():
             loop.call_soon_threadsafe(self._async_broadcast, frame, target_group)
+
+    def _log_skew_warning(self, key: str, author: str, wall_ms: int, now_ms: int) -> None:
+        now_s = self._wall_clock()
+        lead_s = int((wall_ms - now_ms) / 1000)
+        last_warn = self._last_skew_warn_by_author.get(author, 0.0)
+        if now_s - last_warn >= 60.0:
+            self._last_skew_warn_by_author[author] = now_s
+            logger.warning(
+                "rejected state %s from %s: version %d s ahead of local clock (max %d s)",
+                key,
+                author,
+                lead_s,
+                MAX_CLOCK_AHEAD_S,
+            )
+
+    def _already_sent_state(
+        self, ws: Any, key: str, version: StateVersion
+    ) -> bool:
+        """True if this exact version is already on this client's wire."""
+        sent = self._state_sent_versions.get(ws)
+        return sent is not None and sent.get(key) == version
+
+    def _mark_sent_state(self, ws: Any, key: str, version: StateVersion) -> None:
+        self._state_sent_versions.setdefault(ws, {})[key] = version
+
+    def submit_local_state(
+        self,
+        key: str,
+        version: StateVersion,
+        body: bytes,
+        frame: bytes,
+        group_id: str,
+    ) -> int:
+        """Forward a state frame to connected state-capable clients of group_id."""
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return 0
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._async_submit_local_state(key, version, frame, group_id), loop
+            )
+            return future.result(timeout=2.0)
+        except Exception:
+            return 0
+
+    async def _async_submit_local_state(
+        self, key: str, version: StateVersion, frame: bytes, group_id: str
+    ) -> int:
+        count = 0
+        with self._clients_lock:
+            for other_ws, other_queue in list(self._clients.items()):
+                if (
+                    self._group_by_ws.get(other_ws) == group_id
+                    and other_ws in self._state_capable_ws
+                    and not getattr(other_ws, "closed", False)
+                    and not self._already_sent_state(other_ws, key, version)
+                ):
+                    other_queue.put_nowait(frame)
+                    self._mark_sent_state(other_ws, key, version)
+                    count += 1
+        return count
 
     def _async_broadcast(self, payload: bytes, target_group: str) -> None:
         wrapped: bytes | None = None
@@ -352,14 +451,26 @@ class HubServer:
             return None
 
         try:
-            self._server = await websockets.serve(
-                self._handler,
-                host=self._host,
-                port=self._port,
-                process_request=process_request,
-                max_size=self._max_frame_bytes,
-                ping_interval=None,
-            )
+            # A test (or a real restart) may bind the same fixed port immediately
+            # after the previous server stopped; the OS can still report
+            # EADDRINUSE for a few milliseconds while the old listener unwinds.
+            # Retry briefly so a stop/start cycle on one port is not a spurious
+            # startup failure; a genuinely occupied port still raises after ~1 s.
+            for attempt in range(20):
+                try:
+                    self._server = await websockets.serve(
+                        self._handler,
+                        host=self._host,
+                        port=self._port,
+                        process_request=process_request,
+                        max_size=self._max_frame_bytes,
+                        ping_interval=None,
+                    )
+                    break
+                except OSError as exc:
+                    if exc.errno != errno.EADDRINUSE or attempt == 19:
+                        raise
+                    await asyncio.sleep(0.05)
             if self._server.sockets:
                 for sock in self._server.sockets:
                     self._bound_port = sock.getsockname()[1]
@@ -434,6 +545,64 @@ class HubServer:
 
                 if isinstance(message, (bytes, bytearray, memoryview)):
                     payload = bytes(message)
+                    if payload.startswith(STATE_MAGIC):
+                        if self._on_state_stat is not None:
+                            self._on_state_stat("received", 1)
+                        try:
+                            key, version, body = decode_state_frame(payload)
+                        except ValueError:
+                            if self._on_state_stat is not None:
+                                self._on_state_stat("rejected_invalid", 1)
+                            continue
+
+                        with self._clients_lock:
+                            sender_hello = self._hello_by_ws.get(ws)
+                        if sender_hello is None or version.author != sender_hello.device_id:
+                            if self._on_state_stat is not None:
+                                self._on_state_stat("rejected_invalid", 1)
+                            continue
+
+                        now_ms = int(self._wall_clock() * 1000)
+                        if version.wall_ms > now_ms + MAX_CLOCK_AHEAD_S * 1000:
+                            if self._on_state_stat is not None:
+                                self._on_state_stat("rejected_skew", 1)
+                            self._log_skew_warning(key, version.author, version.wall_ms, now_ms)
+                            continue
+
+                        reg = self._state_registers.get(bound_group_id)
+                        if reg is None:
+                            continue
+
+                        won = reg.merge(key, version, body, frame_bytes=payload)
+                        if won:
+                            forward_count = 0
+                            with self._clients_lock:
+                                for other_ws, other_queue in list(self._clients.items()):
+                                    if (
+                                        other_ws != ws
+                                        and self._group_by_ws.get(other_ws) == bound_group_id
+                                        and other_ws in self._state_capable_ws
+                                        and not getattr(other_ws, "closed", False)
+                                        and not self._already_sent_state(
+                                            other_ws, key, version
+                                        )
+                                    ):
+                                        other_queue.put_nowait(payload)
+                                        self._mark_sent_state(other_ws, key, version)
+                                        forward_count += 1
+                            if self._on_state_stat is not None and forward_count > 0:
+                                self._on_state_stat("sent", forward_count)
+
+                            if self._on_state_won is not None:
+                                try:
+                                    self._on_state_won(key, version, body, payload)
+                                except Exception:
+                                    pass
+                        else:
+                            if self._on_state_stat is not None:
+                                self._on_state_stat("ignored", 1)
+                        continue
+
                     with self._clients_lock:
                         sender_hello = self._hello_by_ws.get(ws)
                     sender_id = sender_hello.device_id if sender_hello is not None else None
@@ -487,6 +656,24 @@ class HubServer:
                                 removed = self._hello_by_ws.pop(ws, None)
                             if removed is not None:
                                 self._broadcast_roster(bound_group_id)
+                        elif msg_type == CONTROL_STATE_SYNC:
+                            with self._clients_lock:
+                                self._state_capable_ws.add(ws)
+                            reg = self._state_registers.get(bound_group_id)
+                            if reg is not None:
+                                snapshot_count = 0
+                                for key, entry in reg.items():
+                                    if (
+                                        entry.frame_bytes is not None
+                                        and not self._already_sent_state(
+                                            ws, key, entry.version
+                                        )
+                                    ):
+                                        queue.put_nowait(entry.frame_bytes)
+                                        self._mark_sent_state(ws, key, entry.version)
+                                        snapshot_count += 1
+                                if self._on_state_stat is not None and snapshot_count > 0:
+                                    self._on_state_stat("sent", snapshot_count)
                         else:
                             # Malformed / unknown control text is ignored
                             pass
@@ -512,6 +699,8 @@ class HubServer:
                 self._clients.pop(ws, None)
                 had_hello = self._hello_by_ws.pop(ws, None)
                 self._group_by_ws.pop(ws, None)
+                self._state_capable_ws.discard(ws)
+                self._state_sent_versions.pop(ws, None)
             sender_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await sender_task

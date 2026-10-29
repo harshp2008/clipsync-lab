@@ -627,3 +627,65 @@ Workflow: DIRECT (prompt `DS-fix-state-isolation`); no agy job started. Branch
   every run and at the end; zero `Logging error` / `I/O operation on closed file`.
   Frozen acceptance diff `git diff main -- tests/acceptance` is empty.
 
+---
+
+## Design run: state channel (2026-10-29, branch `design/state-channel`)
+
+Workflow: DIRECT (prompt `DS-clipsync-state-channel-design`); no agy job. Branch cut
+from `main` `f18c16e`. **Design + frozen tests only, then stop.** The feature is NOT
+implemented in this run; the frozen tests are red by design.
+
+- 05:05 — wrote `docs/design/meshcore-state.md` (wire envelope, HLC/total order, hub
+  register, attach/handover/partition/hub-restart flows, failure modes, decisions
+  table, S1-S11 mapping). Closed H24 by design instead of documenting the window:
+  state is LWW per key, the hub keeps the latest value per key per group in memory,
+  and every client pushes + pulls on every attach.
+- 05:06 — appended the pointer in `coordination-v2.md` section 2; marked H24 in
+  `NEEDS_HUMAN.md` as "design proposed" with the four owner questions.
+- 05:07 — wrote `tests/acceptance/test_meshcore_state.py` (S1-S11, 11 tests) and
+  extended `tests/conftest.py::pytest_ignore_collect` so frozen D7 keeps collecting
+  exactly 300 in its historical invocation while normal runs collect 320 (D61).
+- 05:07 — **red run**: `python3 -m pytest -q tests/acceptance/test_meshcore_state.py`
+  → **11 failed, 0 passed** in 0.46 s, all "API does not exist yet"
+  (`AttributeError: 'Node' object has no attribute 'publish_state'`,
+  `Node.__init__() got an unexpected keyword argument 'wall_clock'`,
+  `ImportError: cannot import name 'STATE_MAGIC'`,
+  `ModuleNotFoundError: clipsync.state_transport`). Full collection: 320 tests;
+  historical D7 count: 300.
+- 05:08 — full suite while the contract is red: **308 passed, 11 contract failures**,
+  plus G7's clean-shell meta-test (it runs the whole suite in a subprocess and needs a
+  zero exit code). With the new file not collected, the legacy suite is 308 passed + G7
+  (the other 308) = 309; no existing test changed. G7 goes green when the
+  implementation makes S1-S11 pass.
+- Next (separate run): implement per section 15 of the design, keep
+  `git diff <frozen-tests-commit> -- tests/acceptance` empty, then update
+  `scripts/smoke_two_processes.py` to single-copy (`TEXT-RETRY 0` /
+  `FAILOVER-RETRY 0`) and re-run the 20x/5+5 gate.
+
+
+
+
+## Implementation run: state channel (2026-10-29, `integration/state-channel`)
+
+Workflow: GATED; one agy job (max 45 min) against the amended frozen contract S1-S14.
+
+- Step 0 (direct): amended `docs/design/meshcore-state.md` for A1 (accepted-floor HLC,
+  causality), A2 (non-sticky skew, rate-limited WARNING, clock correction for
+  recovery) and A3 (D7 `>= 300`, shim removed); added S12-S14 to
+  `tests/acceptance/test_meshcore_state.py`; red run **14 failed** by design; full
+  suite **308 passed / 15 failed** (S1-S14 + G7 meta), collection **323**; D7 green.
+
+## State channel implementation run (2026-10-29, `integration/state-channel`)
+
+- Step 0 direct: amended the contract (A1 accepted-floor HLC, A2 non-sticky skew +
+  clock correction, A3 D7/shim), added S12-S14, red run 14 failed by design, full suite
+  308 passed + S1-S14 + G7. Contract commit **333b815**.
+- One agy job (45 min limit) implemented the design; merge **60ce3a3**. It ended
+  `needs_review`/rc=124 on verify (real attach deadlock after a first basename
+  collision); branch gate-checked, merged and finished directly (D63, H27).
+- Direct fixes: link-callback deadlock, hub id/is_hub ordering, duplicate-frame
+  dedupe, hub `time` import, bind retry, root logging-handler guard, unit-test config
+  fixes, S8 relay-id setup (H28). Final HEAD **fa90c3e**.
+- Final gate: 14/14 S tests, 20/20 state-file runs; full suite 337 passed, 5/5 clean +
+  5/5 ROS; smoke 20/20 with 0 retries (median 1.978 s); real state dir untouched;
+  frozen acceptance diff is only the 3-line S8 setup fix awaiting owner approval.

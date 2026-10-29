@@ -14,6 +14,7 @@ from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
     "TransportError",
+    "FrameTooLarge",
     "Transport",
     "InMemoryTransport",
     "make_pair",
@@ -23,6 +24,10 @@ __all__ = [
 
 class TransportError(Exception):
     """Raised when sending, receiving, or transport connection fails."""
+
+
+class FrameTooLarge(TransportError):
+    """Raised when a frame exceeds maximum transport size cap."""
 
 
 @runtime_checkable
