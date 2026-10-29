@@ -48,7 +48,7 @@ device, how long the copy took to appear, and any daemon log line.
 | 11 | Taskbar flicker | Watch the GNOME dash/taskbar for 60 s while idle with the daemon running | **No** transient windows/flash. Compare with `clipboard_backend = "wayland"`, where the flicker was reproducible |
 | 12 | Survive `killall xclip` | While the daemon runs: `killall xclip`, then copy text again after xclip is restarted (`xclip` is started on demand) | Daemon process still alive; at most one rate-limited `Clipboard backend error (retrying, …)` WARNING per distinct error per 60 s; sync resumes on the next successful copy, without restarting the daemon |
 | 13 | Clipboard stays owned | After a write from the other device, copy something else locally | Local copy syncs out; the daemon's earlier write is not re-published |
-| 14 | Missing binary at startup | Temporarily run with a PATH without xclip: `PATH=/usr/bin/no-xclip-env python3 -m clipsync.daemon --config …` (or `clipboard_backend = "xclip"` with xclip uninstalled) | Clear `Configuration error: … xclip …` and exit code 2 — no poll-loop crash storms |
+| 14 | Missing binary at startup | Run with a PATH that has python3 but no xclip: `mkdir -p /tmp/no-xclip && for c in python3 sh env; do ln -sf "$(command -v $c)" /tmp/no-xclip/$c; done` then `PATH=/tmp/no-xclip python3 -m clipsync.daemon --config ~/.config/clipsync/member-laptop.toml` from the repo root | Clear `Configuration error: … xclip …` and exit code 2 — no poll-loop crash storms |
 | 15 | DISPLAY unset | `env -u DISPLAY python3 -m clipsync.daemon --config …` | Clear `Configuration error: … DISPLAY …` and exit code 2 |
 | 16 | Stop/restart | `ctrl+c` the daemon, restart | Clean shutdown, no `Logging error` / `Task was destroyed` lines; sync resumes |
 

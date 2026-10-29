@@ -107,7 +107,8 @@ use the file backend described next only for tests.
 
 GNOME's compositor (Mutter) does not implement the wl-clipboard data-control
 protocol, so the default Wayland backend falls back to the normal data device. Every
-0.2 s poll therefore opens a transient window: the taskbar flickers constantly, some
+poll (0.2 s in the example config) therefore opens a transient window: the taskbar
+flickers constantly, some
 copies take seconds, and one `wl-paste` hang used to be able to kill the daemon (it
 no longer can; see below). On such a session use the opt-in X11/XWayland backend
 instead, which talks to the XWayland clipboard bridge and returns in milliseconds

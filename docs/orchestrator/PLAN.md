@@ -689,3 +689,43 @@ Workflow: GATED; one agy job (max 45 min) against the amended frozen contract S1
 - Final gate: 14/14 S tests, 20/20 state-file runs; full suite 337 passed, 5/5 clean +
   5/5 ROS; smoke 20/20 with 0 retries (median 1.978 s); real state dir untouched;
   frozen acceptance diff is only the 3-line S8 setup fix awaiting owner approval.
+
+## xclip backend + clipboard error handling (2026-10-29, `feat/xclip-backend`)
+
+- Cut from `main` 644e6e6 (baseline **337 passed**). Direct work, no agy job (brief:
+  "DIRECT work, NO agy job"); no merge into `main`.
+- **A (production bug, first):** `_run_command` turns every runner exception
+  (`TimeoutExpired`, `FileNotFoundError`, `OSError`) into `ClipboardError`;
+  `CLIPBOARD_FAILURES` is the shared tuple. The engine keeps its non-raising contract
+  (`SyncStats.clipboard_errors`, `last_clipboard_error`, plus `PayloadTooLarge` on the
+  read path); the daemon logs one WARNING per 60 s per distinct error and backs off
+  `poll_interval` → 2x → cap 5 s, resetting on the first clean poll. `daemon.run()`
+  catches any escaped `CLIPBOARD_FAILURES` as a second line of defence; exit codes and
+  shutdown are unchanged. Missing `xclip`/`wl-paste`/`wl-copy` or an unset `DISPLAY`
+  is a config error (exit 2) at startup, never a crash loop.
+- **B:** opt-in `XclipClipboardBackend` (`clipboard_backend = "xclip"`): TARGETS first
+  (rc != 0 / "target not available" / empty = empty clipboard), image-first target
+  choice mirroring `choose_mime`, `UTF8_STRING`→`STRING`→`charset` text preference,
+  `UTF8_STRING`/`STRING`/`text` → wire MIME `text/plain`, shared `MAX_*_BYTES` caps,
+  2 s read / 3 s write timeouts, own session/process group with group-kill on timeout,
+  DEVNULL on writes so the forked xclip selection owner cannot block the parent, parent
+  always reaped. Default stays `wayland` (D64, H31).
+- **C:** +44 tests in `tests/test_clipboard_xclip.py`, +16 in
+  `tests/test_clipboard_robustness.py` → **397 collected**. All fake-runner/static;
+  `SubprocessRunner` tests use `python -c` helpers only (no real clipboard program,
+  no network beyond loopback). No existing test file changed and
+  `git diff 644e6e6 -- tests/acceptance` is empty.
+- **D/E:** README section "Clipboard backends on GNOME Wayland", xclip comment in
+  `examples/member-laptop.toml`, D64, H31 with the recommendation to switch the
+  Wayland default after the manual test, and `docs/xclip-manual-checklist.md`
+  (docs only, never executed by the agent).
+- **Gate (final tree, HEAD before this docs commit):** full suite **5/5 clean**
+  (`397 passed`, 58.5-61.4 s) and **5/5 with the ROS PYTHONPATH** (`397 passed`,
+  56.2-61.6 s); new test files **20/20** (`60 passed` each); smoke **5/5 PASS**;
+  zero `Logging error` / `Task was destroyed`; `~/.local/state/meshcore` absent
+  throughout. Two earlier full-suite attempts on the same host hung in
+  `tests/acceptance/test_meshcore_lan.py` (L9-L11 region) while another agent's
+  pytest suite was running concurrently, and one ROS attempt failed with
+  `EADDRINUSE` in `test_meshcore_exploratory.py::test_copy_during_failover_is_delivered_after_recovery`;
+  all were rerun clean with no code change (pre-existing timing/LAN flakiness, not the
+  clipboard path — those tests never touch the clipboard backend).
