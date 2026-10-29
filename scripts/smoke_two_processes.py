@@ -301,46 +301,24 @@ def run_smoke(workdir: Path) -> None:
         children.append(member_b)
         log(f"member-b starting, clipboard file {clip_b.name} (pid {member_b.proc.pid})")
 
-        # The relay broadcasts without queueing for clients that have not attached
-        # yet, so a copy made immediately after startup can be sent before the other
-        # member is connected.  Copy again with a fresh value (what a user would do
-        # after noticing nothing arrived) and report every lost attempt.
-        deadline = time.monotonic() + FIRST_TEXT_TIMEOUT
-        attempt = 0
-        arrived: float | None = None
-        while time.monotonic() < deadline:
-            attempt += 1
-            first_text = f"smoke text {run_id} attempt {attempt}"
-            atomic_write_text(clip_a, first_text)
-            log(f"TEXT-WRITTEN member-a: {first_text!r} (attempt {attempt})")
-            remaining = deadline - time.monotonic()
-            slice_timeout = min(2.5, max(0.5, remaining))
-            arrived = wait_until(
-                lambda: first_text in read_text(clip_b), slice_timeout, "first text"
-            )
-            for child in children:
-                if not child_alive(child):
-                    raise RuntimeError(
-                        f"{child.name} exited early with code {child.proc.returncode}"
-                    )
-            if arrived is not None:
-                break
-            log(
-                f"TEXT-RETRY attempt {attempt} was not delivered while the members "
-                "were attaching; copying again"
-            )
+        # Single-copy delivery verified on the meshcore state channel: write once
+        # before attach and wait bounded (15 s). No retry loop.
+        first_text = f"smoke text {run_id}"
+        atomic_write_text(clip_a, first_text)
+        log(f"TEXT-WRITTEN member-a: {first_text!r}")
+        arrived = wait_until(
+            lambda: first_text in read_text(clip_b), FIRST_TEXT_TIMEOUT, "first text"
+        )
+        for child in children:
+            if not child_alive(child):
+                raise RuntimeError(
+                    f"{child.name} exited early with code {child.proc.returncode}"
+                )
         if arrived is None:
             raise RuntimeError(
-                f"text did not reach member-b within {FIRST_TEXT_TIMEOUT:.0f} s "
-                f"and {attempt} attempts"
+                f"TEXT-FAILED: text did not reach member-b within {FIRST_TEXT_TIMEOUT:.0f} s"
             )
-        if attempt > 1:
-            log(
-                f"TEXT-NOTE the first {attempt - 1} copy(ies) were lost while the "
-                "members were attaching; a later copy arrived"
-            )
-        else:
-            log("TEXT-NOTE first copy arrived on the first attempt")
+        log("TEXT-RETRY 0")
         log(f"TEXT-ARRIVED member-b after {arrived - STARTED:0.2f}s (total)")
 
         log("stopping the relay to check member-to-member failover")
@@ -349,70 +327,25 @@ def run_smoke(workdir: Path) -> None:
             raise RuntimeError("relay did not exit after SIGTERM/SIGKILL")
         log("RELAY-STOPPED")
 
-        def member_hub_elected() -> bool:
-            def elected_in(path: Path) -> bool:
-                text = read_text(path)
-                return any(f"to {member}" in text for member in ("smoke-a", "smoke-b"))
+        # Copy ONCE during the handover (without waiting for election first)
+        delivered_text = f"smoke failover {run_id}"
+        atomic_write_text(clip_a, delivered_text)
+        log(f"TEXT-WRITTEN member-a: {delivered_text!r} (during handover)")
 
-            return elected_in(member_a.log_path) and elected_in(member_b.log_path)
-
-        elected = wait_until(member_hub_elected, ELECTION_TIMEOUT, "member hub election")
+        failed_over = wait_until(
+            lambda: delivered_text in read_text(clip_b), POST_FAILOVER_TEXT_TIMEOUT, "failover text"
+        )
         for child in (member_a, member_b):
             if not child_alive(child):
                 raise RuntimeError(
                     f"{child.name} exited during failover with code {child.proc.returncode}"
                 )
-        if elected is None:
-            raise RuntimeError(
-                f"FAILOVER-FAILED: members did not elect a hub within "
-                f"{ELECTION_TIMEOUT:.0f} s after the relay stopped"
-            )
-        log(f"FAILOVER-ELECTED member hub after {elected - STARTED:0.2f}s (total)")
-
-        # A publish in the handover window can be broadcast before the peer's
-        # client link is registered at the new hub, and meshcore broadcast does not
-        # queue for absent clients.  Copy again with a new value (what a user would
-        # do after noticing nothing arrived) and report every lost attempt instead
-        # of hiding the race.  With the link up, the next change is delivered.
-        deadline = time.monotonic() + POST_FAILOVER_TEXT_TIMEOUT
-        attempt = 0
-        failed_over: float | None = None
-        delivered_text = ""
-        while time.monotonic() < deadline:
-            attempt += 1
-            delivered_text = f"smoke failover {run_id} attempt {attempt}"
-            atomic_write_text(clip_a, delivered_text)
-            log(f"TEXT-WRITTEN member-a: {delivered_text!r} (attempt {attempt})")
-            remaining = deadline - time.monotonic()
-            slice_timeout = min(2.5, max(0.5, remaining))
-            failed_over = wait_until(
-                lambda: delivered_text in read_text(clip_b), slice_timeout, "failover text"
-            )
-            for child in (member_a, member_b):
-                if not child_alive(child):
-                    raise RuntimeError(
-                        f"{child.name} exited during failover with code {child.proc.returncode}"
-                    )
-            if failed_over is not None:
-                break
-            log(
-                f"FAILOVER-RETRY attempt {attempt} was lost in the handover window; "
-                "copying again"
-            )
-
         if failed_over is None:
             raise RuntimeError(
                 f"FAILOVER-FAILED: text did not reach member-b within "
-                f"{POST_FAILOVER_TEXT_TIMEOUT:.0f} s and {attempt} attempts after "
-                "the members elected a hub"
+                f"{POST_FAILOVER_TEXT_TIMEOUT:.0f} s after the relay stopped"
             )
-        if attempt > 1:
-            log(
-                f"FAILOVER-NOTE the first {attempt - 1} copy(ies) were lost during "
-                "the handover window; a later copy arrived"
-            )
-        else:
-            log("FAILOVER-NOTE post-election copy arrived on the first attempt")
+        log("FAILOVER-RETRY 0")
         log(f"FAILOVER-OK member-b after {failed_over - STARTED:0.2f}s (total)")
     except BaseException as exc:  # noqa: BLE001 - reported after cleanup
         failure = exc
@@ -429,8 +362,8 @@ def run_smoke(workdir: Path) -> None:
         raise SystemExit(1)
 
     print(
-        f"PASS: relay + two member daemons synced text on loopback and kept "
-        f"syncing after the relay stopped ({time.monotonic() - STARTED:0.2f}s)",
+        f"PASS: relay + two member daemons verified single-copy delivery on "
+        f"loopback and across failover ({time.monotonic() - STARTED:0.2f}s)",
         flush=True,
     )
 
