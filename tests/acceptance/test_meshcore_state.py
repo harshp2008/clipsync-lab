@@ -567,7 +567,9 @@ def test_s8_groups_are_isolated_and_a_tapped_frame_carries_no_plaintext() -> Non
             port=relay_port,
         )
     )
-    relay_address = RelayConfig(address=f"127.0.0.1:{relay_port}")
+    relay_address = RelayConfig(
+        address=f"127.0.0.1:{relay_port}", device_id="relaybox"
+    )
     members: list[Node] = []
     tap: Link | None = None
     tap_frames: list[bytes] = []
