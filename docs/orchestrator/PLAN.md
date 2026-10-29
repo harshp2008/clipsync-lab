@@ -674,3 +674,18 @@ Workflow: GATED; one agy job (max 45 min) against the amended frozen contract S1
   recovery) and A3 (D7 `>= 300`, shim removed); added S12-S14 to
   `tests/acceptance/test_meshcore_state.py`; red run **14 failed** by design; full
   suite **308 passed / 15 failed** (S1-S14 + G7 meta), collection **323**; D7 green.
+
+## State channel implementation run (2026-10-29, `integration/state-channel`)
+
+- Step 0 direct: amended the contract (A1 accepted-floor HLC, A2 non-sticky skew +
+  clock correction, A3 D7/shim), added S12-S14, red run 14 failed by design, full suite
+  308 passed + S1-S14 + G7. Contract commit **333b815**.
+- One agy job (45 min limit) implemented the design; merge **60ce3a3**. It ended
+  `needs_review`/rc=124 on verify (real attach deadlock after a first basename
+  collision); branch gate-checked, merged and finished directly (D63, H27).
+- Direct fixes: link-callback deadlock, hub id/is_hub ordering, duplicate-frame
+  dedupe, hub `time` import, bind retry, root logging-handler guard, unit-test config
+  fixes, S8 relay-id setup (H28). Final HEAD **fa90c3e**.
+- Final gate: 14/14 S tests, 20/20 state-file runs; full suite 337 passed, 5/5 clean +
+  5/5 ROS; smoke 20/20 with 0 retries (median 1.978 s); real state dir untouched;
+  frozen acceptance diff is only the 3-line S8 setup fix awaiting owner approval.

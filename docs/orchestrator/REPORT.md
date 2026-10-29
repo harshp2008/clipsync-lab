@@ -1114,3 +1114,17 @@ git checkout main && git merge --no-ff -m "merge deploy: laptop real-process smo
 ```
 
 Then verify: `env -u PYTHONPATH python3 -m pytest -q` -> expected **307 passed**.
+
+## State channel implementation (2026-10-29)
+
+**Done.** The LWW state channel is implemented on `integration/state-channel` (contract
+333b815, merge 60ce3a3, final fa90c3e): new state frames + `state_sync`, per-node HLC
+with accepted-floor causality and clock correction, hub per-group in-memory registers
+with win-only forwarding and snapshot, `MeshStateTransport`, engine drop-on-too-large,
+daemon mesh wiring, single-copy smoke. S1-S14 14/14 and 20/20 runs; full suite 337
+passed 5/5 clean and 5/5 ROS; smoke 20/20 PASS with `TEXT-RETRY 0`/`FAILOVER-RETRY 0`
+(median 1.978 s). The hub sees metadata only; token/TLS limitation unchanged.
+
+**Open:** H27 (agy verify timeout text for agy-mcp), H28 (owner approval for the S8
+relay-id setup edit; the only frozen diff), H29 (real two-device/clock/resume test),
+H30 (merge into `main` reserved for the owner).

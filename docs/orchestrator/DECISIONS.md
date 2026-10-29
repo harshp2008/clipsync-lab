@@ -879,3 +879,60 @@ frozen test was edited; the fixes were production/docs/smoke-only.
 - **Red run:** `tests/acceptance/test_meshcore_state.py` → 14 failed (all missing API),
   by design. Full suite → 308 passed, 14 S failures + G7's whole-suite meta-test; no
   existing test changed except A3. Collection after the contract: 323 tests.
+
+## D63 — State channel: implementation, fixes and gate (2026-10-29)
+- Branch `integration/state-channel` cut from `design/state-channel` at the amended
+  contract **333b815** (A1 true HLC, A2 non-sticky skew + clock correction, A3 D7/shim).
+  One agy job `16f0bd05-9bd0-4e82-8ec2-3e574a51bf1f` (branch
+  `agy/state-channel-implementation-4fd55f73`, base 333b815, head e639251, 8 commits)
+  implemented the design; merged with `--no-ff` as **60ce3a3**. Direct fixes on top:
+  **a89134a** (concurrency + logging guard), **6b94eb6** (unit test configs),
+  **fa90c3e** (S8 relay id setup). Final HEAD **fa90c3e**.
+- **Job outcome:** `needs_review` with verify rc=124 after 900 s. The first verify
+  failed on a pytest basename collision (`tests/test_meshcore_state.py` vs
+  `tests/acceptance/test_meshcore_state.py`); the job added `tests/__init__.py` to
+  make the test dirs importable as packages. The second verify hit the real
+  `_on_link_connected` deadlock (it took `_link_lock` on the link worker thread while
+  `_ensure_link` held it across `link.connect()`), so the run was not resumed; the
+  branch was gate-checked, merged and finished directly, per the prompt. Exact text is
+  in `NEEDS_HUMAN.md` H27 so agy-mcp can be fixed. No agy internals were inspected.
+- **A1 HLC** lives in `coordination.HLC` (`accepted_floor` + `last`, per-frame accept,
+  publish counter rule) and is pinned by S12/S14. **A2** adds a per-frame skew check in
+  Node and Hub, `rejected_skew`, a rate-limited WARNING (60 s per author) and the
+  clock-correction rule (self-authored future floor dropped when the local clock moves
+  back past it; accepted floor never lowered), pinned by S13.
+- **Implementation fixes made after the job** (all covered by the frozen tests):
+  deadlock-free attach callback (link passed directly, no `_link_lock`); `is_hub` role
+  published only after `_current_hub` is consistent (S2 handover window); per-client
+  last-sent version dedupe so the attach snapshot and a concurrent forward cannot put
+  the same version on the wire twice (S7 `sent == 1`); missing `time` import in
+  `hub.py`; 1 s EADDRINUSE retry in `HubServer.start` for stop/start on a fixed port;
+  root `conftest.py` that drops only root logging handlers whose capture stream is
+  already closed (the G7 "Logging error" noise). No frozen test was relaxed.
+- **S8 contract bug (asked-owner, H28):** S8 builds the relay with `device_id=
+  "relaybox"` but its `RelayConfig` omitted `device_id`, so the preferred-hub alias is
+  the default `"relay"`; existing frozen G4 explicitly expects `"relay"` there. The
+  two frozen tests cannot both pass. Chosen fix: pass `device_id="relaybox"` in S8's
+  `RelayConfig` (test setup only, no assertion changed). This is the **one**
+  `git diff 333b815 -- tests/acceptance` line (3 insertions/1 deletion) and needs
+  owner approval; revert is `git checkout 333b815 -- tests/acceptance/test_meshcore_state.py`
+  (S8 then fails against G4 semantics).
+- **`tests/__init__.py`** is required because the prompt fixes the unit-test path
+  `tests/test_meshcore_state.py`, which collides with the frozen acceptance basename
+  under pytest's default import mode; making `tests` a package is the minimal fix and
+  keeps normal imports/collection unchanged (full collection 337).
+- **Gate (final tree):** S1-S14 14/14, 20/20 consecutive runs (~5.3 s/run); full suite
+  **337 passed**, 5/5 clean (54-61 s) and 5/5 with the ROS PYTHONPATH (57-60 s);
+  smoke 20/20 PASS, median 1.978 s, `TEXT-RETRY 0`/`FAILOVER-RETRY 0` in every run;
+  zero `Logging error`/`Task was destroyed` in the final runs; real
+  `~/.local/state/meshcore` absent throughout. Earlier in the run two transient
+  whole-suite failures were seen (G7 subprocess EADDRINUSE on a reused port, and one
+  A1 roster timing miss under the ROS run); the bind retry and logging guard were
+  added for the former, and the final five-run blocks are clean. The exact failures
+  are recorded rather than called flaky.
+- **Security:** the hub sees group id, state key names, authors, HLC versions,
+  ciphertext sizes and timing only; it never gets the e2e key and never decrypts. A
+  member cannot write under another author (hello-id check). A misclocked device can
+  never win while wrong, cannot move another node's floor (S14), and recovers without
+  a restart (S13); a wrong-key member applies nothing. Replay is harmless under LWW.
+  The token still crosses `ws://` in cleartext without TLS (H15), unchanged.
