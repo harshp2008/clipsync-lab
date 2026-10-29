@@ -38,7 +38,7 @@ mesh.on_peers_changed(fn(roster))
 mesh.on_hub_changed(fn(hub_id))
 ```
 
-- **state channel:** each write carries `{hlc, device_id}`; a newer write wins; on reconnect two devices exchange their current value and the newer one wins. Keeps the current value + a short history by hash (GC'd). HLC: `hlc = max(wall_now, highest_seen + 1)` (monotonic, no clock sync). **Design: `docs/design/meshcore-state.md`** (closes H24; frozen acceptance tests S1-S11 in `tests/acceptance/test_meshcore_state.py`; implementation is a separate later run). That design supersedes "short history": the channel keeps one value per key, and the hub keeps the latest value per key per group in memory only.
+- **state channel:** each write carries `{hlc, device_id}`; a newer write wins; on reconnect two devices exchange their current value and the newer one wins. Keeps the current value + a short history by hash (GC'd). HLC: `hlc = max(wall_now, highest_seen + 1)` (monotonic, no clock sync). **Design: `docs/design/meshcore-state.md`** (closes H24; frozen acceptance tests S1-S14 in `tests/acceptance/test_meshcore_state.py`; implementation is a separate later run). That design supersedes "short history": the channel keeps one value per key, and the hub keeps the latest value per key per group in memory only.
 - **event channel:** each event has an id; the hub's outbox queues it for devices that are offline and drops it after `ttl`; receivers dedupe by id (LRU). An app can pair it with a state channel for flags such as "dismissed".
 
 ## 3. Identity and ordering

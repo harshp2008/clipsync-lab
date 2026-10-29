@@ -1,4 +1,4 @@
-"""Frozen acceptance tests for the meshcore state channel (S1-S11).
+"""Frozen acceptance tests for the meshcore state channel (S1-S14).
 
 Contract: ``docs/design/meshcore-state.md``. These tests were written and committed
 BEFORE the implementation job; the implementation must not edit this file. They use
@@ -26,8 +26,9 @@ Frozen API under test (all new, all missing today, so the whole file is red):
 * ``meshcore.link.Link.send_control(text)``: the state-capability control frame.
 * ``clipsync.state_transport.MeshStateTransport(node, key="clipboard")``.
 
-Existing tests are untouched: this file is the only addition to ``tests/acceptance``
-and the 309-test baseline keeps its meaning (see ``conftest.pytest_ignore_collect``).
+Existing tests are untouched; this file is the only addition to ``tests/acceptance``.
+S12-S14 pin the owner amendments A1 (true HLC, accepted floor) and A2 (non-sticky
+skew handling, clock correction) on top of the original S1-S11 contract.
 """
 
 from __future__ import annotations
@@ -770,4 +771,188 @@ def test_s11_clipsync_on_meshcore_delivers_once_across_a_hub_failover() -> None:
                 daemon.close()
             except Exception:  # noqa: BLE001
                 pass
+        stop_nodes(nodes)
+
+
+# -- S12: A1 causality under skew -------------------------------------------
+
+
+def _causality_case(later_is_behind: bool) -> None:
+    """A is 120 s ahead of B. One copies, the other accepts, then copies 1 s later.
+
+    ``later_is_behind``: A (ahead) copies first, B (behind) accepts and copies, so
+    the later copy must win despite B's clock being behind. The other direction runs
+    the same hand-off with the roles swapped, so both arrival orders are covered.
+    """
+    fixed = time.time()
+    hub_clock = Clock(fixed)
+    ahead_clock = Clock(fixed, offset=120.0)  # n1 = A
+    behind_clock = Clock(fixed)  # n2 = B
+    nodes, _configs = build_nodes(
+        3, clocks=[hub_clock, ahead_clock, behind_clock]
+    )  # n0 hub, n1 A, n2 B
+    first_payload = b"from-the-first-copy"
+    later_payload = b"from-the-copy-one-second-later"
+    try:
+        for node in nodes:
+            node.start()
+        assert wait_until(
+            lambda: all(node.hub_id == "n0" for node in nodes)
+        ), [node.hub_id for node in nodes]
+
+        if later_is_behind:
+            first, receiver, receiver_clock = nodes[1], nodes[2], behind_clock
+        else:
+            first, receiver, receiver_clock = nodes[2], nodes[1], ahead_clock
+
+        first.publish_state("clipboard", first_payload)
+        assert wait_until(
+            lambda: receiver.get_state("clipboard") == first_payload
+        ), receiver.get_state("clipboard")
+        first_version = receiver.get_state_version("clipboard")
+        assert first_version is not None
+        assert first_version.author == first.device_id
+
+        # One second later on the receiver's own (injected) clock. It has accepted
+        # the first copy, so its next copy must win by the A1 rule even when its
+        # wall clock is behind the author of the value it just accepted.
+        receiver_clock.offset += 1.0
+        receiver.publish_state("clipboard", later_payload)
+
+        assert wait_until(
+            lambda: all(node.get_state("clipboard") == later_payload for node in nodes)
+        ), [node.get_state("clipboard") for node in nodes]
+        winner = receiver.get_state_version("clipboard")
+        assert winner is not None
+        assert winner.author == receiver.device_id
+        assert (winner.wall_ms, winner.counter) > (
+            first_version.wall_ms,
+            first_version.counter,
+        ), (winner, first_version)
+        assert all(
+            node.get_state_version("clipboard") == winner for node in nodes
+        )
+        time.sleep(QUIET)
+        assert all(node.get_state("clipboard") == later_payload for node in nodes)
+    finally:
+        stop_nodes(nodes)
+
+
+def test_s12_causality_survives_a_clock_behind_the_accepted_author() -> None:
+    _causality_case(later_is_behind=True)
+    _causality_case(later_is_behind=False)
+
+
+# -- S13: A2 non-sticky rejection and recovery without a restart ------------
+
+
+def test_s13_a_misclocked_device_recovers_when_its_clock_is_fixed() -> None:
+    fixed = time.time()
+    hub_clock = Clock(fixed)
+    honest_clock = Clock(fixed)
+    skewed_clock = Clock(fixed, offset=600.0)  # ten minutes ahead
+    nodes, _configs = build_nodes(
+        3, clocks=[hub_clock, honest_clock, skewed_clock]
+    )  # n0 hub, n1 honest, n2 skewed
+    recovered = b"recovered-after-the-clock-was-fixed"
+    try:
+        for node in nodes:
+            node.start()
+        assert wait_until(
+            lambda: all(node.hub_id == "n0" for node in nodes)
+        ), [node.hub_id for node in nodes]
+
+        nodes[1].publish_state("clipboard", b"honest-baseline")
+        assert wait_until(
+            lambda: nodes[0].get_state("clipboard") == b"honest-baseline"
+        ), nodes[0].get_state("clipboard")
+
+        nodes[2].publish_state("clipboard", b"ten-minutes-ahead")
+        assert wait_until(lambda: nodes[0].state_stats.rejected_skew >= 1)
+        assert nodes[0].get_state("clipboard") == b"honest-baseline"
+        assert nodes[1].get_state("clipboard") == b"honest-baseline"
+
+        # There is no one-shot ban: a second frame is checked and rejected again.
+        nodes[2].publish_state("clipboard", b"still-misclocked")
+        assert wait_until(lambda: nodes[0].state_stats.rejected_skew >= 2)
+        assert nodes[0].get_state("clipboard") == b"honest-baseline"
+
+        # Fix the injected clock in place: same node, same process, no restart.
+        skewed_clock.offset = 0.0
+        nodes[2].publish_state("clipboard", recovered)
+        assert wait_until(
+            lambda: nodes[0].get_state("clipboard") == recovered
+        ), nodes[0].get_state("clipboard")
+        assert wait_until(
+            lambda: nodes[1].get_state("clipboard") == recovered
+        ), nodes[1].get_state("clipboard")
+        assert nodes[2].get_state("clipboard") == recovered
+
+        version = nodes[0].get_state_version("clipboard")
+        assert version is not None
+        assert version.author == "n2"
+        assert all(
+            node.get_state_version("clipboard") == version for node in nodes
+        )
+        # The recovered frame was accepted, not counted as another rejection.
+        assert nodes[0].state_stats.rejected_skew == 2
+        time.sleep(QUIET)
+        assert nodes[0].state_stats.rejected_skew == 2
+        assert nodes[0].get_state("clipboard") == recovered
+    finally:
+        stop_nodes(nodes)
+
+
+# -- S14: A1 floor safety, a rejected far-future frame ----------------------
+
+
+def test_s14_a_rejected_far_future_frame_does_not_move_the_floor() -> None:
+    fixed = time.time()
+    hub_clock = Clock(fixed)
+    honest_clock = Clock(fixed)
+    far_clock = Clock(fixed, offset=3600.0)  # one hour ahead
+    nodes, _configs = build_nodes(
+        3, clocks=[hub_clock, honest_clock, far_clock]
+    )  # n0 hub, n1 honest, n2 far future
+    early = b"honest-early"
+    later = b"honest-later"
+    try:
+        for node in nodes:
+            node.start()
+        assert wait_until(
+            lambda: all(node.hub_id == "n0" for node in nodes)
+        ), [node.hub_id for node in nodes]
+
+        nodes[1].publish_state("clipboard", early)
+        assert wait_until(lambda: nodes[0].get_state("clipboard") == early)
+        early_version = nodes[0].get_state_version("clipboard")
+        assert early_version is not None
+
+        nodes[2].publish_state("clipboard", b"one-hour-ahead")
+        assert wait_until(lambda: nodes[0].state_stats.rejected_skew >= 1)
+        # The rejected frame cannot move the hub's floor or its register.
+        assert nodes[0].get_state("clipboard") == early
+        assert nodes[0].get_state_version("clipboard") == early_version
+
+        # A later honest copy still wins: a poisoned floor would make it lose.
+        honest_clock.offset = 5.0
+        nodes[1].publish_state("clipboard", later)
+        assert wait_until(
+            lambda: nodes[0].get_state("clipboard") == later
+        ), nodes[0].get_state("clipboard")
+        assert wait_until(
+            lambda: nodes[1].get_state("clipboard") == later
+        ), nodes[1].get_state("clipboard")
+        later_version = nodes[1].get_state_version("clipboard")
+        assert later_version is not None
+        assert (later_version.wall_ms, later_version.counter) > (
+            early_version.wall_ms,
+            early_version.counter,
+        )
+        assert nodes[0].get_state_version("clipboard") == later_version
+        assert nodes[0].state_stats.rejected_skew == 1
+        time.sleep(QUIET)
+        assert nodes[0].state_stats.rejected_skew == 1
+        assert nodes[0].get_state("clipboard") == later
+    finally:
         stop_nodes(nodes)

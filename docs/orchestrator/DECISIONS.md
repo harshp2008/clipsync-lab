@@ -841,3 +841,41 @@ frozen test was edited; the fixes were production/docs/smoke-only.
   mesh image consequence of the 8 MiB cap.
 
 
+
+## D62 — State channel: contract amendments A1-A3 (2026-10-29)
+- Branch `design/state-channel`, direct work (no agy). Owner accepted the four design
+  recommendations (8 MiB plaintext cap, 300 s ahead bound with REJECT, hub register
+  memory-only, the user-visible tie/misclock/image/sent-consequences) and mandated:
+  **A1** true HLC, **A2** non-sticky skew handling, **A3** the D7 harness fix.
+- **A1 implemented in the contract** (`docs/design/meshcore-state.md` §3): publish wall
+  = `max(now, highest accepted-or-published wall)`; counter +1 on an equal wall, else 0;
+  only *accepted* frames raise the accepted floor; the hub and every receiver reject
+  before observing. After B accepts A's copy, B's next copy always wins even with a
+  behind clock (S12 both directions).
+- **A2 implemented in the contract** (§6): every frame is re-evaluated against the
+  local wall; no ban, no quarantine list, no restart. Rejections increment
+  `rejected_skew` and log a WARNING rate-limited to once per 60 s per author. A
+  rejected frame never moves the floor (S14). A fixed clock recovers on the next frame
+  (S13).
+- **Ambiguity resolved (A1 vs A2), decided:** a device that *published* a far-future
+  value owns that wall in its own HLC, so fixing its clock would otherwise leave it
+  unable to ever publish an accepted version. Resolution: **clock correction** — when
+  the node's own last published wall is >300 s ahead of its current wall clock, drop
+  only the *self-authored* future floor, rebuild `last` from `accepted_floor` (never
+  below it) and replace the local self-authored poisoned register entry on the next
+  publish. Causality against accepted frames is preserved because the accepted floor
+  bounds the rebuild; a rejected frame still raises nothing. This is the only case
+  where a wall floor can move down, and it is what makes S13 pass without a restart.
+  Logged as design decision D23.
+- **A3 (owner-approved harness fix):** D7 now asserts `>= 300` collected (it also
+  ignores only `test_deploy_smoke.py`, so the historical count includes the new files)
+  and the `pytest_ignore_collect` shim is deleted from `tests/conftest.py`. This is the
+  owner-approved exception to the frozen-test rule and is recorded as D24.
+- **S12-S14 frozen** in `tests/acceptance/test_meshcore_state.py`: S12 causality under
+  skew (both directions), S13 non-sticky rejection + recovery (rejected twice, clock
+  fixed in place, next copy accepted, exactly 2 rejections), S14 rejected +1 h frame
+  does not move the hub floor and a later honest copy wins. Style matches S1-S11:
+  injected `Clock`, `wait_until(.., 8.0)`, no real clipboard, loopback only.
+- **Red run:** `tests/acceptance/test_meshcore_state.py` → 14 failed (all missing API),
+  by design. Full suite → 308 passed, 14 S failures + G7's whole-suite meta-test; no
+  existing test changed except A3. Collection after the contract: 323 tests.

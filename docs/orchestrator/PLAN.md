@@ -664,3 +664,13 @@ implemented in this run; the frozen tests are red by design.
 
 
 
+
+## Implementation run: state channel (2026-10-29, `integration/state-channel`)
+
+Workflow: GATED; one agy job (max 45 min) against the amended frozen contract S1-S14.
+
+- Step 0 (direct): amended `docs/design/meshcore-state.md` for A1 (accepted-floor HLC,
+  causality), A2 (non-sticky skew, rate-limited WARNING, clock correction for
+  recovery) and A3 (D7 `>= 300`, shim removed); added S12-S14 to
+  `tests/acceptance/test_meshcore_state.py`; red run **14 failed** by design; full
+  suite **308 passed / 15 failed** (S1-S14 + G7 meta), collection **323**; D7 green.

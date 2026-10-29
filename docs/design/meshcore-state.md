@@ -1,9 +1,20 @@
 # meshcore state channel (LWW + HLC): design
 
-Status: **design proposed, frozen acceptance tests committed, implementation NOT started.**
+Status: **contract amended (A1-A3), frozen acceptance tests S1-S14 committed,
+implementation NOT started.**
 Branch `design/state-channel` (cut from `main` after the state-isolation merge). The
-contract lives in this file and in `tests/acceptance/test_meshcore_state.py` (S1-S11,
+contract lives in this file and in `tests/acceptance/test_meshcore_state.py` (S1-S14,
 frozen: written before the implementation job, must not be edited by it).
+
+Owner amendments applied before the implementation run:
+
+- **A1 true HLC**: a local publish uses the highest wall ever accepted or published,
+  only accepted frames raise the floor, and causality survives a clock that is behind.
+- **A2 non-sticky skew handling**: every frame is re-evaluated; rejection is counted
+  and logged (rate-limited), never a permanent quarantine, and a device recovers by
+  itself once its clock is right (clock correction below, no restart).
+- **A3 harness fix** (owner-approved): D7 asserts "at least 300 tests collected" and
+  the `pytest_ignore_collect` shim is gone.
 
 This closes H24: meshcore's hub broadcast is fire-and-forget, so a copy made before a
 member attaches, or during the startup attach / hub handover window, is lost while the
@@ -100,12 +111,35 @@ which no transport can prevent.
 Every value carries `StateVersion(wall_ms, counter, author)`.
 
 - **HLC per node**, from an injectable wall clock (`Node(config, wall_clock=...)`,
-  default `time.time`):
-  - publish: `w = max(now_ms, last_wall)`; `counter = last_counter + 1 if w ==
-    last_wall else 0`; `last = (w, counter)`.
-  - receive an **accepted** version: `last_wall = max(last_wall, v.wall_ms)` and, when
-    equal, `last_counter = max(last_counter, v.counter)`. A *rejected* (skew) version
-    never advances the local clock, so an outlier cannot drag honest clocks forward.
+  default `time.time`). The node keeps two things:
+  - `accepted_floor = (wall_ms, counter)`: the greatest version it has *accepted* from
+    another device. Only accepted frames move it, and only forward. A rejected (skew)
+    frame never touches it.
+  - `last = (wall_ms, counter)`: the greatest wall ever accepted or published by this
+    node (normally the maximum of `accepted_floor` and its own last publish).
+  - publish: `w = max(now_ms, last.wall)`; `counter = last.counter + 1 if w ==
+    last.wall else 0`; `last = (w, counter)`. The node also remembers `own_wall = w`,
+    the wall of its own last publish.
+  - accept a frame with version `v`: first check the skew bound; if accepted, set
+    `accepted_floor` to the greater of itself and `v` (equal wall: greater counter),
+    and `last = max(last, accepted_floor)`. A *rejected* version never advances either
+    clock, so an outlier cannot drag honest clocks forward.
+- **Call it one rule (A1).** `last` is the floor: a local publish is always at least as
+  new as every version this node has accepted or published. After B accepts A's copy
+  `v`, B's next copy has `wall >= v.wall`, and when the wall is equal its counter is
+  greater, so **B's next copy always wins even if B's clock is behind A's**. A
+  far-future frame that B rejects never raises the floor, so it cannot make later
+  honest copies lose.
+- **Clock correction (A2).** The floor normally only moves forward. The one exception
+  is a proven clock fault: if the node's own last published wall is more than
+  `MAX_CLOCK_AHEAD_S` ahead of its current wall clock, its clock has moved backwards
+  past its own version. That self-authored future version can never be accepted by an
+  honest peer, so it is discarded: `last` is rebuilt from `accepted_floor` (never
+  below it) and the local register entry this node authored at that future wall is
+  replaced by the next local publish. Causality against accepted frames still holds
+  because the rebuild is bounded by `accepted_floor`; a rejected frame still never
+  raises anything. This is what lets a +10 min device recover without a restart once
+  its clock is fixed.
 - **Total order**: `(wall_ms, counter, author)`, ascending; the greatest version wins.
   Identical version → keep the existing value (idempotent replay).
 - **Deterministic winner for concurrent copies**: two values produced in the same
@@ -240,22 +274,35 @@ forwarding:
 > receiver's wall clock (`MAX_CLOCK_AHEAD_S = 300`). Older versions are never
 > rejected for being old (LWW already ignores them).
 
-- A device one hour ahead therefore cannot win at all: every honest node rejects its
-  frames, nothing is stored or forwarded, and its later copies stay rejected while its
-  clock is wrong (S5). A version up to 300 s ahead is accepted (S5).
-- A rejected frame increments `state_stats.rejected_skew` and logs one `WARNING` per
-  (key, author) with the measured lead, e.g. `rejected state clipboard from n2:
-  version 3599 s ahead of local clock (max 300 s)`.
-- The misclocked device is **quarantined**: it keeps its own value locally and does not
-  apply honest values that are older than its future version. Recovery: fix the clock
-  and restart that device (the register is memory-only, so the fresh process re-seeds
-  from the local clipboard with a corrected HLC).
+- **Non-sticky (A2).** The check is made on **every** frame; there is no quarantine
+  list, no ban and no restart requirement. A frame within the bound is accepted even if
+  an earlier frame from the same author was rejected. A device one hour ahead cannot
+  win at all while its clock is wrong: every honest node rejects its frames, nothing is
+  stored or forwarded (S5), and its later copies stay rejected only for as long as its
+  clock stays wrong.
+- A rejected frame increments `state_stats.rejected_skew` and logs a `WARNING`, rate
+  limited to **once per 60 s per author**, with the measured lead, e.g. `rejected state
+  clipboard from n2: version 3599 s ahead of local clock (max 300 s)`. A rejected
+  frame never raises the receiver's HLC floor (A1), so it cannot make later honest
+  copies lose (S14).
+- **Recovery (no restart).** A device whose clock was wrong recovers by itself as soon
+  as its clock is right:
+  - a device that was *behind* (e.g. a laptop just resumed from sleep) jumps forward;
+    its next publish uses the corrected `now` and is accepted;
+  - a device that was *ahead* has minted a future version of its own. When its clock
+    moves back by more than the bound, the **clock correction** in section 3 discards
+    that self-authored future floor, keeps the accepted floor, replaces the local
+    poisoned value with the next local publish and sends it; the hub accepts it on the
+    next frame (S13). If peers had accepted the future value (only possible when their
+    clocks were ahead too) LWW still holds the future value until the walls catch up;
+    that is a deployment-wide clock fault, named by the WARNINGs.
 - The bound is not a clamp: clamping a version at the receiver would give different
   registers on different nodes and break convergence. Rejection is deterministic as
   long as honest clocks agree within the bound (they do on any NTP'd or hotspot
   device); a slow hub rejects honest copies and is a deployment error the WARNING
   names (see failure modes).
-- No new clock sync is introduced; the HLC keeps ordering monotonic per device.
+- No new clock sync is introduced; the HLC keeps ordering monotonic per device and
+  preserves causality across an accepted hand-off (A1).
 
 ## 7. Size, memory bounds and what happens above them
 
@@ -353,8 +400,9 @@ assertions, so the implementation run must keep those green.
   `dropped_undecryptable` (S8). Limitation, documented: a member with the correct
   token but the wrong e2e key can publish ciphertext the hub cannot validate; the hub
   may store it as the newest value, honest members drop it (`dropped_undecryptable`)
-  and never apply it, and the misconfigured device is quarantined the same way as a
-  misclocked one. Fix the key and restart. (A key fingerprint in the clear header was
+  and never apply it. Unlike a misclocked device (which recovers frame by frame, no
+  restart), a wrong-key device stays unable to apply anything until its key is fixed
+  and it restarts. (A key fingerprint in the clear header was
   considered and rejected for this iteration: it needs a new hub config field and
   leaks a key fingerprint.)
 - Two groups on one relay are fully isolated: one register per group, forwarding only
@@ -373,7 +421,8 @@ assertions, so the implementation run must keep those green.
 | hub restart (empty) | members push on attach; hub re-learns | converge, no manual step (S6) |
 | member offline for a while | only its latest local value exists there | older copies are skipped, never resurrected (S3) |
 | receiver missed values | hub keeps one value per key | snapshot on attach |
-| device clock > 300 s ahead | frames rejected, WARNING, counter | that device is quarantined; honest copies converge (S5) |
+| device clock > 300 s ahead | every frame re-checked, rejected, counted, rate-limited WARNING; no quarantine | that device is temporarily unable to win; honest copies converge (S5) and it recovers once its clock is fixed, no restart (S13) |
+| own clock jumped backwards (resume, NTP) | clock correction drops the self-authored future floor, accepted floor kept | next copy is accepted; no restart, no manual step (S13) |
 | hub more than 300 s **slow** | rejects honest copies (they look ahead) | WARNING `rejected_skew` on the hub; fix the hub clock/NTP |
 | wrong e2e key member | receiver drops + `dropped_undecryptable` | that member never applies state; hub may cache its ciphertext (limitation above) |
 | value above 8 MiB | `NodeError` before send; engine drops + warns | loud error, node healthy, clipboard not corrupted (S9) |
@@ -395,10 +444,10 @@ confirm (also listed in the final report).
 | D4 | HLC `(wall_ms, counter)` per node, injectable wall clock (`Node(wall_clock=...)`); total order `(wall_ms, counter, author)`, greatest wins | decided |
 | D5 | No sequence numbers; attach push + snapshot is the reliability mechanism; gaps are intended | decided |
 | D6 | Hub keeps one ciphertext + version per key per group, forwards only on a win, never echoes to the sender | decided |
-| D7 | Hub register is **memory only**, lost on restart; members re-push; no meshcore state on disk | asked-owner |
+| D7 | Hub register is **memory only**, lost on restart; members re-push; no meshcore state on disk | decided (owner accepted) |
 | D8 | Member-hub shares its local register with the hub; relay keeps one register per served group with no key | decided |
-| D9 | Clock bound: reject versions > 300 s ahead of the receiver's clock, count + WARNING, no clamp; misclocked device quarantined | asked-owner |
-| D10 | Max state payload 8 MiB plaintext (and the encrypted frame must fit `max_frame_bytes`); above it `NodeError` at the publisher | asked-owner |
+| D9 | Clock bound: reject versions > 300 s ahead of the receiver's clock, count + WARNING (once per 60 s per author), no clamp; rejection is per frame, never a permanent quarantine, and a device recovers once its clock is right without a restart | decided (owner accepted, A2) |
+| D10 | Max state payload 8 MiB plaintext (and the encrypted frame must fit `max_frame_bytes`); above it `NodeError` at the publisher | decided (owner accepted) |
 | D11 | Memory bound: at most 16 keys per group, one value each; extra keys refused with a warning | decided |
 | D12 | Applying a received state never bumps the version and never re-publishes; no self callback on `publish_state` | decided |
 | D13 | New `clipsync/state_transport.py` (`MeshStateTransport`) for mesh mode only; legacy relay path unchanged | decided |
@@ -406,11 +455,15 @@ confirm (also listed in the final report).
 | D15 | State logic lives in existing meshcore modules (`coordination.py` ordering/register, `messages.py` frames, `node.py`, `hub.py`, `link.py`); **no new `meshcore/*.py`** because frozen G7/A10 allowlists would fail without an owner-approved frozen-test edit | decided (forced) |
 | D16 | Hub rejects a member frame whose `author` differs from the sender's hello id | decided |
 | D17 | Wrong-key members are quarantined at the receiver (apply nothing, count it); hub may cache their ciphertext (accepted limitation) | decided |
-| D18 | Images on mesh are limited to ~6 MiB by the 8 MiB state cap; chunking out of scope | asked-owner (user-visible) |
-| D19 | 300 s bound is relative to the receiver; honest clocks must agree within the bound for a consistent decision near the edge; keep the hub NTP'd | asked-owner |
+| D18 | Images on mesh are limited to ~6 MiB by the 8 MiB state cap; chunking out of scope | decided (owner accepted) |
+| D19 | 300 s bound is relative to the receiver; honest clocks must agree within the bound for a consistent decision near the edge; keep the hub NTP'd | decided (owner accepted) |
 | D20 | `publish_state` works before `start()` and after `stop()`, never blocks on a connect, and never raises because the node is detached | decided |
+| D21 | **True HLC (A1)**: the floor is the highest wall ever accepted or published; only accepted frames raise `accepted_floor`; publish takes `max(now, floor)` with the counter rule; causality means B's next copy wins after accepting A's even when B's clock is behind | decided (owner mandated) |
+| D22 | **Non-sticky skew (A2)**: check every frame against the local wall, no quarantine list, no restart; count `rejected_skew`, WARNING rate-limited once per 60 s per author; rejected frames never move the floor | decided (owner mandated) |
+| D23 | **Clock correction** (needed for A2's "recovers as soon as its clock is right"): if the node's own last publish is > 300 s ahead of its current clock, drop that self-authored future floor, rebuild from `accepted_floor`, and replace the local self-authored poisoned entry on the next publish. The only case where the floor goes down; accepted causality is preserved | decided |
+| D24 | **Harness fix (A3, owner-approved)**: D7 asserts at least 300 collected and the `pytest_ignore_collect` shim is removed, so the historical count is honest and the new files are always visible | decided (owner mandated) |
 
-## 13. Frozen acceptance tests (S1-S11)
+## 13. Frozen acceptance tests (S1-S14)
 
 `tests/acceptance/test_meshcore_state.py` (in-process `Node`s, loopback only, ports
 from `free_port()` / bind-to-0, `FakeClipboard` only, injected clocks, every cross-node
@@ -429,14 +482,18 @@ assertion through `wait_until(..., 8.0)`):
 | S9 | an oversized value is refused loudly at the publisher and the node stays healthy |
 | S10 | old clients (no `state_sync`) never receive state frames; legacy `publish`/`on_receive` still works both ways |
 | S11 | three clipsync daemons on meshcore with `MeshStateTransport`: a copy during a hub failover is delivered once, with no retry and no duplicate write |
+| S12 | **A1 causality under skew**: A is 120 s ahead of B; A copies, B receives, B copies 1 s later (and the reverse direction); every node ends on B's value, B's version is strictly greater even though B's clock is behind |
+| S13 | **A2 recovery**: a +10 min device is rejected and counted; its injected clock is fixed and its next copy is accepted by the hub and applied everywhere, with no restart |
+| S14 | **A1 floor safety**: a rejected +1 h frame does not move the hub's floor; a later honest copy still wins and every node converges to it |
 
 Not covered by the frozen tests (the implementation run adds its own unit tests): frame
-codec edge cases, key validation, HLC monotonicity, register bounds, `FrameTooLarge`
-in the engine, daemon mesh wiring, and the updated smoke script.
+codec edge cases, key validation, HLC monotonicity and clock correction, WARNING rate
+limiting, register bounds, `FrameTooLarge` in the engine, daemon mesh wiring, and the
+updated smoke script.
 
 While this contract is red, one existing meta-test is red too: G7's clean-shell test
 runs the whole suite in a subprocess and asserts a zero exit code, so it necessarily
-fails until the implementation makes S1-S11 green. That is a consequence of the
+fails until the implementation makes S1-S14 green. That is a consequence of the
 contract being red, not a broken existing test, and no test was edited for it; the
 implementation gate must see the full suite green (G7 included).
 
@@ -448,11 +505,12 @@ cross-group sharing; compression, chunking or on-disk persistence of state.
 
 ## 15. Implementation notes (for the later run)
 
-Expected changes: `meshcore/coordination.py` (HLC, `StateVersion`, `StateEntry`,
-`StateRegister`, `StateStats`, limits, ~+150 lines), `meshcore/messages.py`
-(`STATE_MAGIC`, state frame + `state_sync` codec, ~+80), `meshcore/node.py`
-(API, local register, attach push, receive path, stats, ~+180), `meshcore/hub.py`
-(register wiring, snapshot, merge/forward, author check, ~+120),
+Expected changes: `meshcore/coordination.py` (HLC with accepted floor + clock
+correction, `StateVersion`, `StateEntry`, `StateRegister`, `StateStats`, limits,
+~+180 lines), `meshcore/messages.py` (`STATE_MAGIC`, state frame + `state_sync` codec,
+~+80), `meshcore/node.py` (API, local register, attach push, receive path, skew check,
+rate-limited WARNING, stats, ~+180), `meshcore/hub.py`
+(register wiring, snapshot, merge/forward, author check, per-frame skew check, ~+120),
 `meshcore/link.py` (`on_connected`, `send_control`, ~+30),
 `clipsync/state_transport.py` (new, ~+90), `clipsync/transport.py`
 (`FrameTooLarge`, ~+5), `clipsync/engine.py` (drop-on-too-large, docstrings, ~+15),
@@ -460,5 +518,6 @@ Expected changes: `meshcore/coordination.py` (HLC, `StateVersion`, `StateEntry`,
 0 retries), plus `tests/test_meshcore_state.py` unit tests and the smoke re-run.
 
 Frozen-test constraint for the implementation job: `git diff <frozen-tests-commit> --
-tests/acceptance` must be empty. If a G7/A10 conflict appears anyway, stop and report
-it, do not edit a frozen test.
+tests/acceptance` must be empty (`<frozen-tests-commit>` is the contract commit with
+S1-S14). If a G7/A10 conflict appears anyway, stop and report it, do not edit a frozen
+test.
