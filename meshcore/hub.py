@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import hmac
 from http import HTTPStatus
 import json
 import logging
 import threading
+import time
 from typing import Any, Callable, Iterable
 
 import websockets
@@ -138,6 +140,10 @@ class HubServer:
         self._hello_by_ws: dict[Any, Hello] = {}
         self._group_by_ws: dict[Any, str] = {}
         self._state_capable_ws: set[Any] = set()
+        # Per client, the last state version we put on its wire. Guards the
+        # snapshot/forward overlap: a client must not receive the same version
+        # twice (S7 counts frames; duplicates would also be wasted traffic).
+        self._state_sent_versions: dict[Any, dict[str, StateVersion]] = {}
 
         if state_registers is not None:
             self._state_registers = dict(state_registers)
@@ -255,6 +261,7 @@ class HubServer:
                 self._hello_by_ws.clear()
                 self._group_by_ws.clear()
                 self._state_capable_ws.clear()
+                self._state_sent_versions.clear()
 
     def _signal_stop(self) -> None:
         if self._stop_event is not None and not self._stop_event.is_set():
@@ -332,6 +339,16 @@ class HubServer:
                 MAX_CLOCK_AHEAD_S,
             )
 
+    def _already_sent_state(
+        self, ws: Any, key: str, version: StateVersion
+    ) -> bool:
+        """True if this exact version is already on this client's wire."""
+        sent = self._state_sent_versions.get(ws)
+        return sent is not None and sent.get(key) == version
+
+    def _mark_sent_state(self, ws: Any, key: str, version: StateVersion) -> None:
+        self._state_sent_versions.setdefault(ws, {})[key] = version
+
     def submit_local_state(
         self,
         key: str,
@@ -346,13 +363,15 @@ class HubServer:
             return 0
         try:
             future = asyncio.run_coroutine_threadsafe(
-                self._async_submit_local_state(frame, group_id), loop
+                self._async_submit_local_state(key, version, frame, group_id), loop
             )
             return future.result(timeout=2.0)
         except Exception:
             return 0
 
-    async def _async_submit_local_state(self, frame: bytes, group_id: str) -> int:
+    async def _async_submit_local_state(
+        self, key: str, version: StateVersion, frame: bytes, group_id: str
+    ) -> int:
         count = 0
         with self._clients_lock:
             for other_ws, other_queue in list(self._clients.items()):
@@ -360,8 +379,10 @@ class HubServer:
                     self._group_by_ws.get(other_ws) == group_id
                     and other_ws in self._state_capable_ws
                     and not getattr(other_ws, "closed", False)
+                    and not self._already_sent_state(other_ws, key, version)
                 ):
                     other_queue.put_nowait(frame)
+                    self._mark_sent_state(other_ws, key, version)
                     count += 1
         return count
 
@@ -430,14 +451,26 @@ class HubServer:
             return None
 
         try:
-            self._server = await websockets.serve(
-                self._handler,
-                host=self._host,
-                port=self._port,
-                process_request=process_request,
-                max_size=self._max_frame_bytes,
-                ping_interval=None,
-            )
+            # A test (or a real restart) may bind the same fixed port immediately
+            # after the previous server stopped; the OS can still report
+            # EADDRINUSE for a few milliseconds while the old listener unwinds.
+            # Retry briefly so a stop/start cycle on one port is not a spurious
+            # startup failure; a genuinely occupied port still raises after ~1 s.
+            for attempt in range(20):
+                try:
+                    self._server = await websockets.serve(
+                        self._handler,
+                        host=self._host,
+                        port=self._port,
+                        process_request=process_request,
+                        max_size=self._max_frame_bytes,
+                        ping_interval=None,
+                    )
+                    break
+                except OSError as exc:
+                    if exc.errno != errno.EADDRINUSE or attempt == 19:
+                        raise
+                    await asyncio.sleep(0.05)
             if self._server.sockets:
                 for sock in self._server.sockets:
                     self._bound_port = sock.getsockname()[1]
@@ -550,8 +583,12 @@ class HubServer:
                                         and self._group_by_ws.get(other_ws) == bound_group_id
                                         and other_ws in self._state_capable_ws
                                         and not getattr(other_ws, "closed", False)
+                                        and not self._already_sent_state(
+                                            other_ws, key, version
+                                        )
                                     ):
                                         other_queue.put_nowait(payload)
+                                        self._mark_sent_state(other_ws, key, version)
                                         forward_count += 1
                             if self._on_state_stat is not None and forward_count > 0:
                                 self._on_state_stat("sent", forward_count)
@@ -626,8 +663,14 @@ class HubServer:
                             if reg is not None:
                                 snapshot_count = 0
                                 for key, entry in reg.items():
-                                    if entry.frame_bytes is not None:
+                                    if (
+                                        entry.frame_bytes is not None
+                                        and not self._already_sent_state(
+                                            ws, key, entry.version
+                                        )
+                                    ):
                                         queue.put_nowait(entry.frame_bytes)
+                                        self._mark_sent_state(ws, key, entry.version)
                                         snapshot_count += 1
                                 if self._on_state_stat is not None and snapshot_count > 0:
                                     self._on_state_stat("sent", snapshot_count)
@@ -657,6 +700,7 @@ class HubServer:
                 had_hello = self._hello_by_ws.pop(ws, None)
                 self._group_by_ws.pop(ws, None)
                 self._state_capable_ws.discard(ws)
+                self._state_sent_versions.pop(ws, None)
             sender_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await sender_task

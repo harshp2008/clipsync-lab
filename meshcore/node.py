@@ -608,7 +608,6 @@ class Node:
 
     def _handle_hub_changed(self, new_hub: str) -> None:
         old_hub = self._current_hub
-        self._desired_hub = new_hub
         forced = self._election is not None and self._election.last_forced
         reason = "forced: no reachable device will_hub" if forced else "election probe"
         logger.info("Hub changed from %s to %s (%s)", old_hub, new_hub, reason)
@@ -618,8 +617,13 @@ class Node:
                 if self._link is not None:
                     self._link.close()
                     self._link = None
+            # Publish the new role only after _current_hub is consistent: is_hub
+            # keys off _desired_hub, so a stale hub_id here would be a visible
+            # window in which is_hub is True while hub_id still names the old hub.
             self._current_hub = new_hub
+            self._desired_hub = new_hub
         else:
+            self._desired_hub = new_hub
             self._ensure_link(new_hub)
 
         # Notify callbacks outside internal locks
@@ -695,8 +699,11 @@ class Node:
                     thread_name=f"meshcore-link-{self.device_id}",
                     on_roster=self._handle_client_roster,
                     on_payload=self._handle_client_payload,
-                    on_connected=self._on_link_connected,
                 )
+                # The callback runs on the link worker thread *inside* connect(),
+                # while Node still holds _link_lock, so it must be given the link
+                # directly and must not take that lock (deadlock otherwise).
+                link.set_on_connected(lambda: self._on_link_connected(link))
                 try:
                     link.connect()
                     self._link = link
@@ -722,10 +729,8 @@ class Node:
                 merged.pop(self._config.relay.device_id, None)
             self._election.set_devices(merged.values())
 
-    def _on_link_connected(self) -> None:
-        with self._link_lock:
-            link = self._link
-        if link is None or not link.connected:
+    def _on_link_connected(self, link: Link) -> None:
+        if not link.connected:
             return
 
         try:
