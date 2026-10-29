@@ -301,9 +301,15 @@ def test_daemon_mesh_wiring_selection(monkeypatch: pytest.MonkeyPatch, tmp_path)
         'device_id = "test-node"\n'
         'group_id = "test-group"\n'
         'token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n'
-        'e2e_key = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n'
+        'e2e_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="\n'
         'clipboard_backend = "file"\n'
         f'clipboard_file = "{tmp_path / "clip.txt"}"\n'
+        '\n'
+        '[[peers]]\n'
+        'device_id = "peer1"\n'
+        'name = "Peer 1"\n'
+        'address = "127.0.0.1:8765"\n'
+        'perm = 1\n'
     )
 
     captured: list[tuple[object, object]] = []
