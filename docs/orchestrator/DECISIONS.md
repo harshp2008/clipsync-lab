@@ -887,7 +887,7 @@ frozen test was edited; the fixes were production/docs/smoke-only.
   `agy/state-channel-implementation-4fd55f73`, base 333b815, head e639251, 8 commits)
   implemented the design; merged with `--no-ff` as **60ce3a3**. Direct fixes on top:
   **a89134a** (concurrency + logging guard), **6b94eb6** (unit test configs),
-  **fa90c3e** (S8 relay id setup). Final HEAD **fa90c3e**.
+  **fa90c3e** (S8 relay id setup); docs commit **75001ef**. Code HEAD **fa90c3e**.
 - **Job outcome:** `needs_review` with verify rc=124 after 900 s. The first verify
   failed on a pytest basename collision (`tests/test_meshcore_state.py` vs
   `tests/acceptance/test_meshcore_state.py`); the job added `tests/__init__.py` to
