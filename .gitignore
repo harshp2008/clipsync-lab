@@ -8,3 +8,15 @@ dist/
 build/
 .coverage
 htmlcov/
+
+# secrets and local state: never commit
+*.secrets
+*.env
+.env*
+token*.txt
+*.key
+*.pem
+last_good.json
+state-*/
+*.log
+
