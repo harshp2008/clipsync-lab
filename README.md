@@ -99,32 +99,44 @@ tailnet/LAN address.
 python3 -m clipsync.daemon --config ~/.config/clipsync/member-laptop.toml
 ```
 
-The default clipboard backend is Wayland (`wl-paste`/`wl-copy`). Copy text as usual;
-it syncs to the other members of the group. A headless machine has no real clipboard;
-use the file backend described next only for tests.
+The default clipboard backend is `auto` (resolved at daemon startup when
+`clipboard_backend` is unset or explicitly `"auto"`). Copy text as usual; it syncs
+to the other members of the group. A headless machine has no real clipboard; use the
+file backend described next only for tests.
 
-### Clipboard backends on GNOME Wayland
+### Clipboard backends and auto-selection
 
-GNOME's compositor (Mutter) does not implement the wl-clipboard data-control
-protocol, so the default Wayland backend falls back to the normal data device. Every
-poll (0.2 s in the example config) therefore opens a transient window: the taskbar
-flickers constantly, some
-copies take seconds, and one `wl-paste` hang used to be able to kill the daemon (it
-no longer can; see below). On such a session use the opt-in X11/XWayland backend
-instead, which talks to the XWayland clipboard bridge and returns in milliseconds
-with no window and no focus requirement:
+GNOME's Wayland compositor (Mutter) does not implement the wl-clipboard data-control
+protocol, so `wl-paste` polling falls back to the normal data device. Every poll
+opens a transient window (causing taskbar flicker) and can hang. By contrast,
+XWayland's clipboard bridge (`xclip`) returns in milliseconds with no flicker and no
+focus requirement.
+
+To give out-of-the-box reliability without requiring manual edits:
+- When `clipboard_backend` is unset (or set to `"auto"`), the daemon automatically
+  resolves the backend at startup and logs once at INFO (`clipboard backend: <name> (auto: <reason>)`):
+  1. `xclip` if `XDG_SESSION_TYPE == "wayland"` and `xclip` is on PATH and `DISPLAY` is set (auto: `wayland session`);
+  2. `wayland` (`wl-paste`/`wl-copy`) if both binaries are on PATH (auto: `wl-clipboard on PATH`);
+  3. `xclip` if `xclip` is on PATH and `DISPLAY` is set (auto: `x11 session`);
+  4. Otherwise, exits with a clear configuration error (exit code 2) listing the missing tools and fix instructions (`install xclip or wl-clipboard`).
+- To keep offline tools and test fixtures hermetic, `load_config` stores `"wayland"` with
+  `clipboard_backend_explicit = False` when unset; auto-resolution is executed at daemon startup.
+- You can force a specific backend explicitly by setting `clipboard_backend`:
+  - `clipboard_backend = "wayland"` forces the `wl-clipboard` backend even on Wayland sessions with `xclip` present.
+  - `clipboard_backend = "xclip"` forces `xclip` (requires `xclip` on PATH and a set `DISPLAY`).
+  - `clipboard_backend = "auto"` explicitly requests auto-selection.
+  - `clipboard_backend = "file"` opts into the headless file clipboard (test only; requires `clipboard_file`).
 
 ```toml
-clipboard_backend = "xclip"   # needs the xclip package and a set DISPLAY
+# Optional: force a specific backend (default is auto-selection)
+# clipboard_backend = "xclip"
 ```
 
-`wayland` stays the default (this run deliberately did not change it). The daemon
-refuses to start with a clear config error (exit code 2) if the selected backend's
-programs are missing — `xclip` for `"xclip"`, `wl-paste`/`wl-copy` for `"wayland"` —
-or if `DISPLAY` is unset for `"xclip"`. At run time no clipboard read/write failure
-takes the daemon down: it logs a WARNING at most once per 60 s per distinct error,
-backs off from `poll_interval` up to 5 s, and resumes on the first good poll. Manual
-verification steps are in
+The daemon refuses to start with a clear config error (exit code 2) if the selected
+backend's programs are missing or if `DISPLAY` is unset for `"xclip"`. At run time no
+clipboard read/write failure takes the daemon down: it logs a WARNING at most once per
+60 s per distinct error, backs off from `poll_interval` up to 5 s, and resumes on the
+first good poll. Manual verification steps are in
 [`docs/xclip-manual-checklist.md`](docs/xclip-manual-checklist.md).
 
 ### 5. Prove it without touching your clipboard

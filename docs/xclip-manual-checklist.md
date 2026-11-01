@@ -35,6 +35,7 @@ device, how long the copy took to appear, and any daemon log line.
 
 | # | Check | How | Expected |
 |---|-------|-----|----------|
+| 0 | Auto-selection default | Start the daemon with NO `clipboard_backend` line | The log must say `xclip (auto: wayland session)` |
 | 1 | Startup is clean | Start the daemon with `clipboard_backend = "xclip"` | No `Configuration error`; a single startup line; no repeated warnings in the first 30 s |
 | 2 | Plain text | Select a word in a terminal, `ctrl+shift+c`, then the same content in the other device's clipboard | Appears on the other device within ~1 poll interval (0.2 s) |
 | 3 | Multi-line | Copy a 5–10 line block from a text editor | Newlines preserved exactly on the other device; no trailing bytes added |
