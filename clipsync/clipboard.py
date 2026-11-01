@@ -35,6 +35,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping, Protocol, runtime_checkable
 
+from .config import ConfigError
 from .protocol import (
     MAX_IMAGE_BYTES,
     MAX_TEXT_BYTES,
@@ -597,6 +598,46 @@ def xclip_unavailable_reason(
     return None
 
 
+def resolve_clipboard_backend(
+    *,
+    env: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> tuple[str, str]:
+    """Auto-resolve the clipboard backend for the current environment.
+
+    Resolution table:
+    1. If XDG_SESSION_TYPE == "wayland" and xclip is on PATH and DISPLAY is set -> "xclip", "wayland session"
+    2. Else if wl-paste and wl-copy are on PATH -> "wayland", "wl-clipboard on PATH"
+    3. Else if xclip is on PATH and DISPLAY is set -> "xclip", "x11 session"
+    4. Else raises :class:`ConfigError` listing missing tools and fix instructions.
+    """
+    lookup = shutil.which if which is None else which
+    environ = os.environ if env is None else env
+
+    session_type = str(environ.get("XDG_SESSION_TYPE") or "").strip().lower()
+    has_xclip = lookup("xclip") is not None
+    has_display = bool(str(environ.get("DISPLAY") or "").strip())
+    has_wl = lookup("wl-paste") is not None and lookup("wl-copy") is not None
+
+    if session_type == "wayland" and has_xclip and has_display:
+        return "xclip", "wayland session"
+    if has_wl:
+        return "wayland", "wl-clipboard on PATH"
+    if has_xclip and has_display:
+        return "xclip", "x11 session"
+
+    missing = [prog for prog in ("xclip", "wl-paste", "wl-copy") if lookup(prog) is None]
+    details: list[str] = []
+    if missing:
+        details.append(f"missing tools on PATH: {', '.join(missing)}")
+    if not has_display:
+        details.append("DISPLAY is not set")
+    detail_str = "; ".join(details) if details else "no supported backend available"
+    raise ConfigError(
+        f"no usable clipboard backend found ({detail_str}); install xclip or wl-clipboard"
+    )
+
+
 def backend_unavailable_reason(
     backend: str,
     *,
@@ -609,6 +650,12 @@ def backend_unavailable_reason(
     of entering a poll loop that fails on every iteration.
     """
     name = (backend or "wayland").strip().lower()
+    if name == "auto":
+        try:
+            resolve_clipboard_backend(env=env, which=which)
+            return None
+        except ConfigError as exc:
+            return str(exc)
     if name == "xclip":
         return xclip_unavailable_reason(env=env, which=which)
     if name in ("wayland", "wl"):
@@ -641,6 +688,7 @@ __all__ = [
     "backend_unavailable_reason",
     "choose_mime",
     "choose_xclip_target",
+    "resolve_clipboard_backend",
     "wl_clipboard_available",
     "xclip_available",
     "xclip_unavailable_reason",

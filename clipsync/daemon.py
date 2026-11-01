@@ -17,7 +17,7 @@ import signal
 import sys
 import threading
 import time
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .clipboard import (
     CLIPBOARD_FAILURES,
@@ -26,6 +26,7 @@ from .clipboard import (
     WlClipboardBackend,
     XclipClipboardBackend,
     backend_unavailable_reason,
+    resolve_clipboard_backend,
 )
 from .config import ConfigError, DaemonConfig, ensure_no_placeholders, load_config
 from .crypto import Codec, FernetCodec
@@ -361,32 +362,47 @@ def build_codec(config: DaemonConfig) -> Codec | None:
 def build_clipboard(config: DaemonConfig) -> ClipboardBackend:
     """Build the configured clipboard backend.
 
-    ``wayland`` (the default, wl-clipboard), ``xclip`` (opt-in XWayland backend) or
-    ``file`` (headless/test only).  This only constructs the object; it never runs a
-    clipboard program and never probes the environment (see
+    ``wayland`` (the default, wl-clipboard), ``xclip`` (opt-in XWayland backend),
+    ``file`` (headless/test only) or ``auto`` (resolves via
+    :func:`resolve_clipboard_backend`).  This constructs the object; for non-auto
+    backends it never runs a clipboard program and never probes the environment (see
     :func:`check_clipboard_backend` for the startup check).
     """
-    if config.clipboard_backend == "file":
+    backend = config.clipboard_backend
+    if backend == "auto":
+        backend, _ = resolve_clipboard_backend()
+    if backend == "file":
         if config.clipboard_file is None:
             raise ValueError("clipboard_backend='file' requires clipboard_file")
         return FileClipboardBackend(config.clipboard_file)
-    if config.clipboard_backend == "xclip":
+    if backend == "xclip":
         return XclipClipboardBackend()
     return WlClipboardBackend()
 
 
-def check_clipboard_backend(config: DaemonConfig) -> None:
+def check_clipboard_backend(
+    config: DaemonConfig,
+    *,
+    env: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> tuple[str, str | None]:
     """Raise :class:`ConfigError` if the configured backend cannot work here.
 
-    A missing ``xclip``/``wl-paste`` binary or an unset ``DISPLAY`` is a startup
-    configuration problem (clear exit code 2), not a crash loop that retries every
-    poll forever.
+    For explicit backends ('wayland', 'xclip', 'file'), checks that the required
+    binary/display is available and returns (backend_name, None).
+    For auto backends (absent in config or explicitly 'auto'), runs auto-resolution
+    and returns (resolved_backend_name, reason).
     """
-    problem = backend_unavailable_reason(config.clipboard_backend)
+    if not config.clipboard_backend_explicit or config.clipboard_backend == "auto":
+        backend, reason = resolve_clipboard_backend(env=env, which=which)
+        return backend, reason
+
+    problem = backend_unavailable_reason(config.clipboard_backend, env=env, which=which)
     if problem is not None:
         raise ConfigError(
             f"clipboard_backend = {config.clipboard_backend!r}: {problem}"
         )
+    return config.clipboard_backend, None
 
 
 def build_transport(config: DaemonConfig) -> Transport:
@@ -499,12 +515,16 @@ def main(
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 2
 
+    resolved_backend: str | None = None
+    resolved_reason: str | None = None
     try:
         config_path = Path(args.config).expanduser()
         config = load_config(config_path)
         ensure_no_placeholders(config)
         if clipboard_factory is None and config.role != "relay":
-            check_clipboard_backend(config)
+            resolved_backend, resolved_reason = check_clipboard_backend(config)
+            if resolved_backend != config.clipboard_backend:
+                config = dataclasses.replace(config, clipboard_backend=resolved_backend)
     except ConfigError as exc:
         sys.stderr.write(f"Configuration error: {exc}\n")
         return 2
@@ -518,6 +538,11 @@ def main(
         stream=sys.stderr,
         force=True,
     )
+
+    if resolved_reason is not None:
+        logger.info("clipboard backend: %s (auto: %s)", resolved_backend, resolved_reason)
+    elif resolved_backend is not None:
+        logger.info("clipboard backend: %s", resolved_backend)
 
     if config.role == "relay":
         return _run_relay(config, once=args.once, stop_event=stop_event)
