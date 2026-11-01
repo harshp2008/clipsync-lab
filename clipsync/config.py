@@ -90,6 +90,7 @@ class DaemonConfig:
     connect_timeout: float = 5.0
     clipboard_backend: str = "wayland"
     clipboard_file: str | None = None
+    clipboard_backend_explicit: bool = False
     heartbeat: float = 10.0
     missed_pongs: int = 3
     probe_timeout: float = 2.0
@@ -100,6 +101,8 @@ class DaemonConfig:
             object.__setattr__(self, "peers", tuple(self.peers))
         if not isinstance(self.serve_groups, tuple):
             object.__setattr__(self, "serve_groups", tuple(self.serve_groups))
+        if self.clipboard_backend != "wayland" and not self.clipboard_backend_explicit:
+            object.__setattr__(self, "clipboard_backend_explicit", True)
 
     def to_mesh_config(self) -> MeshConfig:
         """Convert this configuration into a meshcore MeshConfig."""
@@ -563,16 +566,19 @@ def load_config(path: str | Path) -> DaemonConfig:
             raise ConfigError("'state_dir' must be a non-empty string")
         state_dir = val.strip()
 
-    # clipboard backend (default stays the real Wayland/wl-clipboard backend)
+    # clipboard backend (default stored value stays "wayland", but
+    # clipboard_backend_explicit marks whether it was explicitly set in the TOML)
     clipboard_backend = "wayland"
+    clipboard_backend_explicit = False
     if "clipboard_backend" in data and data["clipboard_backend"] is not None:
         val = data["clipboard_backend"]
-        if not isinstance(val, str) or val.strip() not in ("wayland", "xclip", "file"):
+        if not isinstance(val, str) or val.strip() not in ("wayland", "xclip", "file", "auto"):
             raise ConfigError(
-                "'clipboard_backend' must be 'wayland', 'xclip' or 'file', "
+                "'clipboard_backend' must be 'wayland', 'xclip', 'file' or 'auto', "
                 f"got {val!r}"
             )
         clipboard_backend = val.strip()
+        clipboard_backend_explicit = True
 
     clipboard_file = None
     if "clipboard_file" in data and data["clipboard_file"] is not None:
@@ -637,6 +643,7 @@ def load_config(path: str | Path) -> DaemonConfig:
         connect_timeout=connect_timeout,
         clipboard_backend=clipboard_backend,
         clipboard_file=clipboard_file,
+        clipboard_backend_explicit=clipboard_backend_explicit,
         heartbeat=heartbeat,
         missed_pongs=missed_pongs,
         probe_timeout=probe_timeout,

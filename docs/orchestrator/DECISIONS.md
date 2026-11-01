@@ -995,3 +995,33 @@ Run `feat/xclip-backend`, cut from `main` 644e6e6 (337 tests), direct work (no a
 - **Docs.** README "Clipboard backends on GNOME Wayland", an xclip comment in
   `examples/member-laptop.toml`, the checklist `docs/xclip-manual-checklist.md`, and
   H31 (never executed here).
+
+## D65 — Clipboard backend auto-selection (2026-11-01)
+Run `feat/backend-auto`, cut from `main` fe1669a (397 tests), direct work.
+
+- **H31 resolution.** Owner verified on physical GNOME Wayland laptop (2026-10-30):
+  `clipboard_backend = "xclip"` works in both directions (text, multi-line, non-ASCII,
+  two copies 0.3 s apart, same text twice, copies from Chromium and gnome-text-editor,
+  daemon survived `killall xclip`), and no `wl-paste` process runs with it, while the old
+  default (`wl-paste` polling) makes the taskbar flicker and can hang. H31 is resolved.
+- **Auto resolution table at daemon startup.**
+  1. `XDG_SESSION_TYPE == "wayland"` and `xclip` on PATH and `DISPLAY` set -> `xclip` (`wayland session`);
+  2. `wl-paste` and `wl-copy` on PATH -> `wayland` (`wl-clipboard on PATH`);
+  3. `xclip` on PATH and `DISPLAY` set -> `xclip` (`x11 session`);
+  4. Otherwise, exits with a clear startup `ConfigError` (exit code 2) listing missing tools and fix instructions (`install xclip or wl-clipboard`).
+- **Default semantics and hermetic config loading.** When `clipboard_backend` is unset in
+  the TOML, `load_config` stores `clipboard_backend = "wayland"` and
+  `clipboard_backend_explicit = False`. This ensures non-daemon tools and offline test
+  fixtures remain hermetic without probing the OS environment, and frozen acceptance test
+  D6 (`test_d6_file_backend_is_opt_in_and_old_configs_stay_wayland`) passes completely
+  untouched (`git diff main -- tests/acceptance` is empty). Auto-resolution is executed
+  at daemon startup (`check_clipboard_backend`/`main()`) where the backend is constructed
+  for a real run.
+- **Explicit overrides beat auto.** Explicit `"wayland"` stays `wayland` (and checks for
+  `wl-clipboard` tools) even on a Wayland session where `xclip` is installed; explicit
+  `"xclip"` requires `xclip` and `DISPLAY`; explicit `"file"` requires `clipboard_file`.
+  Explicit `"auto"` is accepted and triggers the resolution table. Auto never selects `"file"`.
+- **Logging.** The resolved backend is logged once at INFO as
+  `clipboard backend: <name> (auto: <reason>)` when auto is used (both unset and explicit `"auto"`),
+  or `clipboard backend: <name>` when explicitly configured. Config error exit paths detach/suppress
+  global logging re-configuration so test captures stay clean.

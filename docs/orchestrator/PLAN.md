@@ -729,3 +729,23 @@ Workflow: GATED; one agy job (max 45 min) against the amended frozen contract S1
   `EADDRINUSE` in `test_meshcore_exploratory.py::test_copy_during_failover_is_delivered_after_recovery`;
   all were rerun clean with no code change (pre-existing timing/LAN flakiness, not the
   clipboard path — those tests never touch the clipboard backend).
+
+## Clipboard backend auto-selection (2026-11-01, `feat/backend-auto`)
+
+- Cut from `main` fe1669a (baseline **397 passed**). Direct work, no sub-jobs; no merge into `main`.
+- **Context & H31 resolution:** Owner verified on physical GNOME Wayland laptop (2026-10-30):
+  `clipboard_backend = "xclip"` works in both directions (text, multi-line, non-ASCII, two copies 0.3 s apart,
+  same text twice, copies from Chromium and gnome-text-editor, daemon survived `killall xclip`), and no
+  `wl-paste` process runs with it, eliminating taskbar flicker and hangs. H31 marked resolved.
+- **Auto resolution:**
+  - `resolve_clipboard_backend()` in `clipsync/clipboard.py` implements the resolution table:
+    1. `XDG_SESSION_TYPE == "wayland"` + `xclip` on PATH + `DISPLAY` set -> `xclip` (`wayland session`)
+    2. `wl-paste` and `wl-copy` on PATH -> `wayland` (`wl-clipboard on PATH`)
+    3. `xclip` on PATH + `DISPLAY` set -> `xclip` (`x11 session`)
+    4. Clear startup `ConfigError` (exit code 2) listing missing tools (`install xclip or wl-clipboard`).
+  - Hermetic default: absent `clipboard_backend` stores `"wayland"` with `clipboard_backend_explicit = False` in `load_config`, so non-daemon tools/tests stay hermetic; frozen acceptance test D6 (`test_d6_file_backend_is_opt_in_and_old_configs_stay_wayland`) passes untouched.
+  - Startup resolution in daemon `main()` / `check_clipboard_backend()`.
+  - Resolution logged once at INFO as `clipboard backend: <name> (auto: <reason>)` (or `clipboard backend: <name>` for explicit).
+  - Explicit overrides beat auto (`"wayland"`, `"xclip"`, `"file"`). Explicit `"auto"` supported. Auto never chooses `"file"`.
+- **Tests:** +24 tests in `tests/test_clipboard_auto.py` covering all branches, explicit overrides, config parsing, startup logging, and error messages.
+- **Docs:** Updated `README.md`, `examples/member-laptop.toml`, `docs/orchestrator/DECISIONS.md` (D65), `docs/orchestrator/NEEDS_HUMAN.md` (H31 resolved), and `docs/xclip-manual-checklist.md` (added item 0).
